@@ -4,6 +4,7 @@ POC-decision-model
 data/
 *.sqlite3
 *.key
+odd/
 
 # Python
 __pycache__/
