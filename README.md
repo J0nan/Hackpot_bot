@@ -43,6 +43,33 @@ and all configuration comes from one `.env` file.
 
 ---
 
+## Bot commands (BotFather registration)
+
+The bot implements exactly these four commands (`app/bot/handlers.py`). Register them in
+the BotFather chat with `/setcommands` and paste this block as-is:
+
+```text
+start - Add a resource: asks for your GitHub token once, then takes links
+help - Show usage
+cancel - Drop the current resource, nothing gets committed
+forget - Delete my stored GitHub token
+```
+
+Optional, same flow — `/setname`, `/setdescription` and `/setabouttext` set the menu text;
+a neutral description works well, e.g. "Curated Hackpot resource submissions — authorized admins only."
+
+Notes:
+
+- Descriptions after the ` - ` are free text but must stay short; Telegram shows them in the
+  client's command menu (the `/…` hint list).
+- The command menu is visible to **everyone** who opens the bot — that is cosmetic only.
+  The bot silently ignores every update from an ID not in `AUTHORIZED_USERS`, so non-admins
+  clicking `/start` get no response at all.
+- Re-run `/setcommands` after any future command additions; the README table above should
+  stay in sync with the code.
+
+---
+
 ## Configuration (`.env`)
 
 Every value is read from the environment by `app/config.py` and validated at startup —
