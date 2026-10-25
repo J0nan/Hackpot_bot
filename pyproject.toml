@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hackpot-bot"
+version = "0.1.0"
+description = "Telegram bot that classifies pentest resources into the Hackpot repo index"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram==3.31.0",
+    "aiosqlite==0.22.1",
+    "cryptography==50.0.2",
+    "httpx==0.28.1",
+    "pydantic-settings==2.16.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

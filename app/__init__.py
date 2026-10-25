@@ -1,0 +1,1 @@
+"""Hackpot Telegram resource bot."""
