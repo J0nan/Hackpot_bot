@@ -28,3 +28,7 @@ include = ["app*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# A user-site libtmux installs a pytest11 plugin incompatible with pytest 9.1
+# ("Marks cannot be applied to fixtures") and aborts collection everywhere.
+# Blocking it by name is harmless where libtmux is absent (Docker, CI).
+addopts = ["-p", "no:libtmux"]
