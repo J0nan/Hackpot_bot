@@ -99,26 +99,27 @@ ASK_PAT_START = (
     "👋 Welcome, Hackpot curator! First, send me your GitHub Personal Access Token "
     "as one bare message. It is encrypted at rest, used only for commits under your "
     "account, and I delete your message right after capture. Tip: a fine-grained "
-    "token with contents:write on the Hackpot repo only stays revocable. "
-    "Remember: all links must be public."
+    "token with contents:write on the Hackpot repo only stays revocable.\n"
+    "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot\n"
 )
 GREETING_READY = (
     "👋 Welcome back! Send the https link of the resource you want indexed. GitHub "
     "repo links are read automatically; for anything else I will ask you for a "
-    "short summary. Remember: all links must be public."
+    "short summary."
 )
 PAT_SAVED = (
     "✅ Token stored (encrypted). Send the https link of the resource you want "
-    "indexed — remember: all links must be public."
+    "indexed. \nRemember: all links must be public."
 )
 PAT_STILL_NEEDED = (
-    "I still need your GitHub token — send the bare token as one message "
+    "I still need your GitHub token, send the bare token as one message "
     "(stored encrypted, never echoed back)."
 )
 NEED_TOKEN_FOR_LINK = (
     "Before I can index that link, send me your GitHub Personal Access Token as "
     "one bare message. It is stored encrypted and the commit will be made under "
     "your own account."
+    "\nHere you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot\n"
 )
 USAGE_HINT = (
     "Send exactly one https link (for example https://github.com/owner/repo). For a "
