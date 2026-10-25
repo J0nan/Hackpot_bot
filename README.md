@@ -27,8 +27,10 @@ and all configuration comes from one `.env` file.
 3. **Collect numeric Telegram user IDs** — the bot only answers these IDs. Message
    [@userinfobot](https://t.me/userinfobot) (or any ID bot) and note the number, not the
    `@username`.
-4. **Create `.env`** in the project root from the table below (`.env` is git-ignored; the
-   repo intentionally ships no `.env.example`).
+4. **Create `.env`** in the project root: copy the shipped `.env.example` template and
+   replace every `REPLACEME` value (`.env` is git-ignored; `.env.example` is the tracked
+   template with placeholders only — and note the `CATEGORIES_JSON` leaf descriptions
+   are seeded guesses worth refining for your corpus).
 5. **Start it:**
 
    ```bash
