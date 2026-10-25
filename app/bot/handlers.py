@@ -138,7 +138,12 @@ async def on_text(message: Message, deps: AppDeps, flow: ResourceFlow) -> None:
     proceed, user_id, username = await _guard_message(message, deps, flow)
     if not proceed:
         return
-    result = await flow.handle_text(user_id, username, message.text or "")
+
+    async def progress(text: str) -> None:
+        """L7-4: one fast reply before the flow starts the slow decision call."""
+        await message.answer(text)
+
+    result = await flow.handle_text(user_id, username, message.text or "", progress=progress)
     await _send(message, deps, result)
 
 

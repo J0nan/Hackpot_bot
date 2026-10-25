@@ -182,15 +182,20 @@ async def test_commit_wire_targets_only_readme_path(env):  # S16/S4/S8
     await http.aclose()
 
 
-async def test_tampered_folder_never_commits(env):  # S13/S12
+async def test_tampered_folder_never_commits(env):  # S13/S12 (L11-b: safe reject)
     deps, flow = env
     await upsert_user(deps.conn, UID, UNAME)
     await save_github_token(deps.conn, UID, encrypt_pat(deps.settings, TOKEN))
     r = await create_resource(deps.conn, UID, "https://example.com/t", "other")
     await set_resource_state(deps.conn, r, "CONFIRMING", folder="../../etc", entry_line=BULLET)
-    with pytest.raises(ValueError, match="unknown category"):
-        await flow.handle_confirm(UID)
+    # T7/L11-b: handle_confirm now catches the traversal gate's ValueError instead
+    # of raising. The gate itself is unchanged — deps.make_github still explodes if
+    # any client is built, so reaching GitHub would fail this test loudly.
+    result = await flow.handle_confirm(UID)
+    assert "nothing was committed" in "\n".join(result.replies).lower()
+    assert "../../etc" not in "\n".join(result.replies)
     assert (await get_resource(deps.conn, r)).state == "CONFIRMING"
+    assert "commit_rejected" in [action for _, action, _ in await _audit(deps.conn)]
 
 
 async def test_resume_mid_interview_on_fresh_flow(env):  # S10

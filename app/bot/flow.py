@@ -14,10 +14,22 @@ Design contracts (ODD L8 seam contract + L7 follow-ups honored here):
     ``README_EXCERPT_CHARS`` (6000) before reaching ``classify()``.
   * L7-3: real GitHub clients are built only via :func:`make_github_factory`,
     which always pins ``settings.target_repo`` — never the module default.
+  * L7-4: :meth:`ResourceFlow.handle_decision` announces itself through the
+    optional progress sink before the (worst-case ~93 s) classify retries run,
+    so a slow decision never looks like a frozen bot. Best-effort only.
   * L7-5: FetchError/DecisionError land in audit rows with their status /
     request-id-bearing message; the user only ever sees the safe wording.
   * Callback payloads carry indices into ``sorted(settings.categories)``
     only (64-byte limit, no raw paths); the flow resolves them back.
+
+Hardening (T7; ODD L11 a/b/c), all pinned in tests/test_bot_flow.py:
+  * L11-a: those indices are parsed strictly (``^\\d+$``, ASCII digits) — a
+    padded, signed, zero-prefixed, underscored or non-ASCII-digit payload is
+    rejected exactly like ``c:abc``.
+  * L11-b: ``handle_confirm`` catches the traversal gate's ValueError from a
+    tampered ``resources.folder``: it stays CONFIRMING, makes no HTTP call, and
+    records a ``commit_rejected`` audit row with the sanitized folder.
+  * L11-c: the "thinking…" reply above, delivered as one extra reply.
 
 Secrets: PATs are validated, Fernet-encrypted and the capture message is
 flagged for deletion; plaintext tokens never appear in replies or audit.
@@ -27,7 +39,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,6 +84,14 @@ NEEDS_ADMIN_THRESHOLD = 0.5  # S7
 URL_RE = re.compile(r"https?://\S+")
 _TOKEN_SPLIT_RE = re.compile(r"[\s,;]+")
 _PLATFORM_UNSAFE = set("`|'\"\\[](){}")
+# L11-a: callback indices are ASCII digits only, in canonical spelling. int()
+# alone would happily take " 1", "+1", "1_0" and even Arabic-Indic digits ("١"),
+# and "^\d+$" alone would still take "01" — so the shape is matched first, then
+# the round-trip. Keyboards only ever emit str(i), so any other spelling of the
+# same index is a hand-made payload and is rejected like "c:abc".
+_INDEX_RE = re.compile(r"^\d+$", re.ASCII)
+
+ProgressSink = Callable[[str], Awaitable[None]]
 
 # --- user-visible wording (short, safe, no internals, never a secret) -------- #
 SLOW_DOWN = "You are sending too fast — please slow down and try again in a minute."
@@ -109,6 +129,7 @@ ASK_SUMMARY = (
     "Send me a short summary of what that resource is about — remember: all "
     "links must be public."
 )
+ANALYZING = "🤔 Analyzing… send /cancel anytime"  # L7-4: shown before the slow call
 DECISION_FAILED_USER = (
     "The decision model could not classify this resource just now. Nothing was "
     "committed — you can send the link again later or use /cancel."
@@ -146,6 +167,10 @@ NEEDS_ADMIN_NOTE = (
 )
 PREVIEW = "Here is the entry bullet — confirm to commit:"
 COMMITTED_REPLY = "✅ {status} → {url}"
+COMMIT_REJECTED = (
+    "⛔ That destination is not one of the configured categories — nothing was "
+    "committed. Use /cancel, then send the link again."
+)
 CANCELLED_MSG = "🚫 Cancelled — nothing was uploaded. Send a new link any time."
 NOTHING_PENDING = "There is nothing pending to cancel. /start to begin."
 CONFIRMING_HINT = "Use the ✅ Commit / ❌ Cancel buttons above, or /cancel to abort."
@@ -283,6 +308,20 @@ class ResourceFlow:
             detail=sanitize_line(detail, 500),
         )
 
+    async def _emit(self, progress: ProgressSink | None, text: str) -> None:
+        """L7-4/L11-c: best-effort early feedback (a slow call must not look frozen).
+
+        The sink is the caller's rendering concern; a refused send must never
+        abort the flow or leak an internal error into chat, so failures here
+        are swallowed after the audit-safe decision call proceeds anyway.
+        """
+        if progress is None:
+            return
+        try:
+            await progress(text)
+        except Exception:  # noqa: BLE001 - progress is optional UX, not a gate
+            pass
+
     # -- entry points ---------------------------------------------------------- #
 
     async def handle_start(self, user_id: int, username: str) -> FlowResult:
@@ -299,28 +338,31 @@ class ResourceFlow:
             )
         return FlowResult(tuple(replies))
 
-    async def handle_text(self, user_id: int, username: str, text: str) -> FlowResult:
+    async def handle_text(
+        self, user_id: int, username: str, text: str, progress: ProgressSink | None = None
+    ) -> FlowResult:
+        """One text update. ``progress`` is the L7-4 early-feedback sink."""
         await self._touch(user_id, username)
         text = text or ""
         active = await self._active(user_id)
 
         if active is None:
             if looks_like_token(text):
-                return await self._capture_pat(user_id, text.strip(), resume=None)
+                return await self._capture_pat(user_id, text.strip(), resume=None, progress=progress)
             urls = URL_RE.findall(text)
             if len(urls) == 1:
-                return await self._ingest_link(user_id, urls[0])
+                return await self._ingest_link(user_id, urls[0], progress)
             await self._log("usage_hint", user_id, detail=f"urls={len(urls)}")
             return FlowResult((USAGE_HINT,))
 
         state = active.state
         if state == "NEED_TOKEN":
             if looks_like_token(text):
-                return await self._capture_pat(user_id, text.strip(), resume=active)
+                return await self._capture_pat(user_id, text.strip(), resume=active, progress=progress)
             await self._log("pat_reasked", user_id, active.id)
             return FlowResult((PAT_STILL_NEEDED,))
         if state == "NEED_SUMMARY":
-            return await self._record_summary(user_id, active, text)
+            return await self._record_summary(user_id, active, text, progress)
         if state == "AWAITING_PLACEMENT":
             return FlowResult((PLACEMENT_HINT,))
         if state == "AWAITING_ENTRY_INFO":
@@ -342,11 +384,8 @@ class ResourceFlow:
         if data == "o":
             return await self.handle_more_folders(user_id, 0)
         if data.startswith("p:"):
-            try:
-                page = int(data[2:])
-            except ValueError:
-                page = 0
-            return await self.handle_more_folders(user_id, max(0, page))
+            page = self._parse_index(data)
+            return await self.handle_more_folders(user_id, page if page is not None else 0)
         if data == "✅":
             return await self.handle_confirm(user_id)
         if data == "❌":
@@ -364,11 +403,28 @@ class ResourceFlow:
         return FlowResult((UNKNOWN_CALLBACK,))
 
     @staticmethod
-    def _index_to_folder(data: str, folders: list[str]) -> str | None:
+    def _parse_index(data: str) -> int | None:
+        """Strict canonical ``^\\d+$`` payload index (L11-a).
+
+        ``c: 1``, ``c:+1``, ``c:1_0`` and ``c:١`` fail the ASCII-digit match;
+        ``c:01`` matches the shape but is not how an index is ever spelled, so
+        the round-trip check rejects it too. Anything that is not exactly what
+        :mod:`app.bot.keyboards` produces is treated as hostile, not as a near
+        miss — the resolved value is always an in-range index, never a path.
+        """
+        _, separator, raw = data.partition(":")
+        if not separator or not _INDEX_RE.match(raw):
+            return None
+        index = int(raw)
+        if str(index) != raw:
+            return None
+        return index
+
+    @classmethod
+    def _index_to_folder(cls, data: str, folders: list[str]) -> str | None:
         """Resolve ``c:<i>``/``f:<i>`` against sorted(categories) — never raw paths."""
-        try:
-            index = int(data.split(":", 1)[1])
-        except ValueError:
+        index = cls._parse_index(data)
+        if index is None:
             return None
         if 0 <= index < len(folders):
             return folders[index]
@@ -376,7 +432,9 @@ class ResourceFlow:
 
     # -- PAT capture (S8) ------------------------------------------------------- #
 
-    async def _capture_pat(self, user_id: int, token: str, resume: Any) -> FlowResult:
+    async def _capture_pat(
+        self, user_id: int, token: str, resume: Any, progress: ProgressSink | None = None
+    ) -> FlowResult:
         try:
             enc = encrypt_pat(self.deps.settings, token)
         except ValueError:
@@ -387,7 +445,7 @@ class ResourceFlow:
         if resume is None:
             return FlowResult((PAT_SAVED,), delete_message=True)
         if resume.kind == "github":
-            next_step = await self._fetch_and_decide(user_id, resume, token)
+            next_step = await self._fetch_and_decide(user_id, resume, token, progress)
         else:
             await set_resource_state(self.deps.conn, resume.id, "NEED_SUMMARY")
             await self._log("summary_requested", user_id, resume.id)
@@ -397,7 +455,9 @@ class ResourceFlow:
 
     # -- intake ----------------------------------------------------------------- #
 
-    async def _ingest_link(self, user_id: int, raw_url: str) -> FlowResult:
+    async def _ingest_link(
+        self, user_id: int, raw_url: str, progress: ProgressSink | None
+    ) -> FlowResult:
         try:
             url = sanitize_url(raw_url)
         except ValueError as exc:
@@ -422,12 +482,14 @@ class ResourceFlow:
                 await self._log("pat_invalid", user_id, resource_id)
                 await set_resource_state(self.deps.conn, resource_id, "NEED_TOKEN")
                 return FlowResult((PAT_STILL_NEEDED,))
-            return await self._fetch_and_decide(user_id, resource, token)
+            return await self._fetch_and_decide(user_id, resource, token, progress)
         await set_resource_state(self.deps.conn, resource_id, "NEED_SUMMARY")
         await self._log("summary_requested", user_id, resource_id)
         return FlowResult((ASK_SUMMARY,))
 
-    async def _fetch_and_decide(self, user_id: int, resource: Any, token: str) -> FlowResult:
+    async def _fetch_and_decide(
+        self, user_id: int, resource: Any, token: str, progress: ProgressSink | None = None
+    ) -> FlowResult:
         parsed = parse_repo_url(resource.url)
         if parsed is None:  # kind said github but URL no longer parses: treat as other
             await set_resource_state(self.deps.conn, resource.id, "NEED_SUMMARY")
@@ -447,25 +509,30 @@ class ResourceFlow:
         excerpt = readme[:README_EXCERPT_CHARS]  # L7-2
         context = "\n\n".join(part for part in (description, excerpt) if part)
         await set_resource_state(self.deps.conn, resource.id, "NEW", context=context)
-        return await self.handle_decision(user_id)
+        return await self.handle_decision(user_id, progress)
 
-    async def _record_summary(self, user_id: int, resource: Any, text: str) -> FlowResult:
+    async def _record_summary(
+        self, user_id: int, resource: Any, text: str, progress: ProgressSink | None = None
+    ) -> FlowResult:
         summary = sanitize_line(text, SUMMARY_MAX_CHARS)
         if not summary:
             return FlowResult((ASK_SUMMARY,))
         await set_resource_state(self.deps.conn, resource.id, "NEW", context=summary)
         await self._log("summary_stored", user_id, resource.id)
-        return await self.handle_decision(user_id)
+        return await self.handle_decision(user_id, progress)
 
     # -- decision (S5, S7) ------------------------------------------------------- #
 
-    async def handle_decision(self, user_id: int) -> FlowResult:
+    async def handle_decision(
+        self, user_id: int, progress: ProgressSink | None = None
+    ) -> FlowResult:
         resource = await self._active(user_id)
         if resource is None or not resource.context or resource.state not in ("NEW", "NEED_SUMMARY"):
             return FlowResult((UNKNOWN_CALLBACK,))
         excerpt = f"{resource.url}\n\n{resource.context}"
         settings = self.deps.settings
         client = self.deps.make_decision()
+        await self._emit(progress, ANALYZING)  # L7-4: announced before the slow retries
         try:
             result = await client.classify(
                 ticket_id=f"T-{resource.id}",
@@ -696,7 +763,20 @@ class ResourceFlow:
             await self._log("pat_invalid", user_id, resource.id)
             return FlowResult((DECRYPT_FAILED,))
 
-        path = self.deps.settings.readme_path(resource.folder)
+        # L11-b: the traversal gate is the last word here. A folder that is not
+        # a configured category (tampered/stale DB row) must never reach GitHub;
+        # the resource stays CONFIRMING so /cancel works and the operator keeps
+        # the audit trail instead of an unhandled traceback in the log.
+        try:
+            path = self.deps.settings.readme_path(resource.folder)
+        except ValueError:
+            await self._log(
+                "commit_rejected",
+                user_id,
+                resource.id,
+                detail=f"folder={sanitize_line(str(resource.folder or ''))}",
+            )
+            return FlowResult((COMMIT_REJECTED,))
         client = self.deps.make_github(token)
         try:
             commit_url, status = await client.commit_entry(

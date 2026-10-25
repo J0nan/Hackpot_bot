@@ -4,7 +4,9 @@ Real aiosqlite (tmp_path) + real Settings built from a fake env (never the
 machine env), with hand-rolled GitHub/Decision fakes injected through the
 AppDeps factories. No network, no aiogram objects: flow.py must stay
 framework-free. Every assertion goes through observable effects: returned
-FlowResults, stored rows, and audit entries.
+FlowResults, stored rows, and audit entries. (T7 adds the L11-a/b/c + L7-4
+hardening pins here; the one handler-wiring probe uses a duck-typed Message,
+same style as tests/test_bot_gate_regression.py.)
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
+from app.bot import handlers
 from app.bot.flow import (
     AppDeps,
     CandidatesKB,
@@ -27,6 +30,7 @@ from app.bot.flow import (
     ResourceFlow,
     SLOW_DOWN,
     TypeKB,
+    UNKNOWN_FOLDER,
     make_github_factory,
 )
 from app.bot.handlers import precheck
@@ -41,6 +45,7 @@ from app.db.repository import (
     upsert_user,
 )
 from app.security.rate_limit import RateLimiter
+from app.security.sanitizers import sanitize_line
 from app.security.token_store import decrypt_pat
 from app.services.decision import ClassificationResult, DecisionError, FolderCandidate
 from app.services.github import DuplicateError, FetchError
@@ -632,3 +637,169 @@ def test_github_factory_always_pins_settings_target_repo(tmp_path: Path) -> None
 def test_github_factory_default_target_repo(h: dict) -> None:
     factory = make_github_factory(h["settings"], httpx.AsyncClient())
     assert factory("tok").target_repo == "J0nan/Hackpot"
+
+
+# ------------------------------------------------- L11 hardening pins (T7)
+
+
+ANALYZING_TEXT = "🤔 Analyzing… send /cancel anytime"
+
+
+async def test_folder_index_must_be_strict_digits(h: dict) -> None:
+    """L11-a: ``c: 1`` / ``c:+1`` / ``c:01`` are rejected exactly like ``c:abc``."""
+    flow = await _to_placement(h)
+    index = FOLDERS.index(CHOSEN)
+    rejected = [
+        f"c: {index}",
+        "c:+1",
+        "c:01",
+        "c:1_0",
+        "c:١",  # Arabic-Indic digit: int() accepts it, a folder index must not
+        "f: 1",
+        "f:+2",
+        "f:00",
+    ]
+    for data in rejected:
+        result = await flow.handle_callback(USER, "jonan", data)
+        assert result.replies == (UNKNOWN_FOLDER,), data
+        assert result.keyboard is None, data
+
+    active = await get_active_resource_for_user(h["conn"], USER)
+    assert active.state == "AWAITING_PLACEMENT"  # rejected input placed nothing
+    assert active.folder == ""
+    rows = await _audit(h, "placement_rejected")
+    assert [row["detail"] for row in rows] == [f"data={data}" for data in rejected]
+
+    # PRESERVE: the honest index still resolves after the hostile ones were refused.
+    await flow.handle_callback(USER, "jonan", f"c:{index}")
+    active = await get_active_resource_for_user(h["conn"], USER)
+    assert active.state == "AWAITING_ENTRY_INFO"
+    assert active.folder == CHOSEN
+
+
+async def test_folder_page_index_must_be_strict_digits(h: dict) -> None:
+    """L11-a: ``p:<i>`` navigation is strict too; a bad page falls back to page 0."""
+    flow = await _to_placement(h)
+    for data in ("p:01", "p:+1", "p: 1", "p:1_0"):
+        result = await flow.handle_callback(USER, "jonan", data)
+        assert isinstance(result.keyboard, FoldersKB), data
+        assert result.keyboard.page == 0, data
+
+    # PRESERVE: real payloads behave exactly as before.
+    result = await flow.handle_callback(USER, "jonan", "p:1")
+    assert isinstance(result.keyboard, FoldersKB) and result.keyboard.page == 1
+    result = await flow.handle_callback(USER, "jonan", "o")
+    assert isinstance(result.keyboard, FoldersKB) and result.keyboard.page == 0
+    result = await flow.handle_callback(USER, "jonan", f"f:{FOLDERS.index(CHOSEN)}")
+    assert (await get_active_resource_for_user(h["conn"], USER)).folder == CHOSEN
+
+
+async def test_confirm_with_tampered_folder_rejects_safely(h: dict) -> None:
+    """L11-b: a stored folder outside CATEGORIES_JSON must not raise nor commit."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    tampered = "01_Recon/../../etc\nsecret-marker"
+    await set_resource_state(h["conn"], rid, "CONFIRMING", folder=tampered)
+
+    commits_before = len([c for c in h["gh"].calls if c[0] == "commit_entry"])
+    clients_before = len(h["github_tokens"])
+    result = await flow.handle_confirm(USER)
+
+    assert len([c for c in h["gh"].calls if c[0] == "commit_entry"]) == commits_before
+    assert len(h["github_tokens"]) == clients_before  # no client, so no HTTP at all
+    assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"  # not lost, retryable
+    text = "\n".join(result.replies)
+    assert result.replies and "nothing was committed" in text.lower()
+    assert "/cancel" in text  # actionable wording, no internals
+    assert "secret-marker" not in text and "../../etc" not in text  # value never echoed
+    assert result.keyboard is None
+
+    rows = await _audit(h, "commit_rejected")
+    assert len(rows) == 1
+    assert rows[0]["resource_id"] == rid
+    assert rows[0]["detail"] == sanitize_line(f"folder={tampered}")
+    assert "\n" not in rows[0]["detail"]  # the smuggled newline is gone
+
+
+async def test_analyzing_progress_reply_precedes_the_decision_call(h: dict) -> None:
+    """L7-4/L11-c: the slow classify is announced before any retry budget is spent."""
+    flow = h["flow"]
+    await _capture_token(h)
+    order: list[str] = []
+    decision = h["decision"]
+    inner = decision.classify
+
+    async def timed_classify(*args: Any, **kwargs: Any) -> Any:
+        order.append("classify")
+        return await inner(*args, **kwargs)
+
+    decision.classify = timed_classify
+
+    async def sink(text: str) -> None:
+        order.append(f"progress::{text}")
+
+    result = await flow.handle_text(USER, "jonan", GITHUB_URL, progress=sink)
+
+    assert order == [f"progress::{ANALYZING_TEXT}", "classify"]
+    assert isinstance(result.keyboard, CandidatesKB)  # the real answer still arrives
+
+
+async def test_analyzing_progress_is_sent_once_per_decision_call(h: dict) -> None:
+    """One extra reply per classify (summary path included), never an edit pipeline."""
+    flow = h["flow"]
+    await _capture_token(h)
+    sent: list[str] = []
+
+    async def sink(text: str) -> None:
+        sent.append(text)
+
+    # PRESERVE: progress is optional — existing callers keep working untouched.
+    await flow.handle_text(USER, "jonan", "https://cool-labs.io/tool")
+    assert sent == []
+
+    result = await flow.handle_text(USER, "jonan", "Fuzzing wordlist generator.", progress=sink)
+    assert sent == [ANALYZING_TEXT]
+    assert isinstance(result.keyboard, CandidatesKB)
+
+
+async def test_failing_progress_sink_never_breaks_the_decision(h: dict) -> None:
+    """Progress feedback is best-effort: a refused send must not abort the flow."""
+
+    async def broken_sink(text: str) -> None:
+        raise RuntimeError("telegram is down")
+
+    flow = h["flow"]
+    await _capture_token(h)
+    result = await flow.handle_text(USER, "jonan", GITHUB_URL, progress=broken_sink)
+    assert isinstance(result.keyboard, CandidatesKB)
+    assert (await get_active_resource_for_user(h["conn"], USER)).state == "AWAITING_PLACEMENT"
+
+
+class FakeUser:
+    def __init__(self, user_id: int, username: str) -> None:
+        self.id = user_id
+        self.username = username
+
+
+class FakeMessage:
+    """Duck-typed aiogram Message: records the replies the handler sends."""
+
+    def __init__(self, user_id: int, username: str, text: str) -> None:
+        self.from_user = FakeUser(user_id, username)
+        self.text = text
+        self.answers: list[str] = []
+
+    async def answer(self, text: str, reply_markup: Any = None) -> None:
+        self.answers.append(text)
+
+    async def delete(self) -> None:
+        pass
+
+
+async def test_handler_sends_the_analyzing_reply_first(h: dict) -> None:
+    """The rendering side actually wires the progress sink (L7-4)."""
+    await _capture_token(h)
+    message = FakeMessage(USER, "jonan", GITHUB_URL)
+    await handlers.on_text(message, h["deps"], h["flow"])
+    assert message.answers[0] == ANALYZING_TEXT
+    assert any("folder" in text.lower() for text in message.answers[1:])
