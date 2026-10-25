@@ -32,6 +32,9 @@ import httpx
 from pydantic import SecretStr
 
 from app.config import MAX_CATEGORIES
+from app.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 __all__ = [
     "ClassificationResult",
@@ -312,21 +315,47 @@ class DecisionClient:
                 # still user-supplied text: keep them through _safe().
                 last_failure = f"transport error ({type(exc).__name__}: {self._safe(str(exc))})"
                 if is_last:
+                    logger.error(
+                        "decision attempt %d/%d hit a transport error after exhausting retries",
+                        attempt + 1,
+                        MAX_ATTEMPTS,
+                    )
                     raise DecisionError(
                         self._safe(
                             f"decision request failed after {attempt + 1} attempts: {last_failure}"
                         )
                     ) from exc
+                logger.warning(
+                    "decision attempt %d/%d failed with a transport error (%s); retrying",
+                    attempt + 1,
+                    MAX_ATTEMPTS,
+                    type(exc).__name__,
+                )
                 await self._sleep(RETRY_DELAYS[attempt])
                 continue
 
             if not response.is_success:
                 excerpt = self._safe(_excerpt(response.text))
                 detail = f"HTTP {response.status_code}: {excerpt}"
+                status_class = f"{response.status_code // 100}xx"
                 if self._retryable(response.status_code) and not is_last:
                     last_failure = detail
+                    logger.warning(
+                        "decision attempt %d/%d failed with HTTP %d (%s); retrying",
+                        attempt + 1,
+                        MAX_ATTEMPTS,
+                        response.status_code,
+                        status_class,
+                    )
                     await self._sleep(RETRY_DELAYS[attempt])
                     continue
+                logger.error(
+                    "decision attempt %d/%d rejected with HTTP %d (%s)",
+                    attempt + 1,
+                    MAX_ATTEMPTS,
+                    response.status_code,
+                    status_class,
+                )
                 raise DecisionError(
                     self._safe(
                         f"decision API rejected the request after {attempt + 1} "
@@ -337,6 +366,7 @@ class DecisionClient:
             try:
                 data = response.json()
             except ValueError as exc:
+                logger.error("decision API returned invalid JSON (attempt %d/%d)", attempt + 1, MAX_ATTEMPTS)
                 raise DecisionError(
                     self._safe(
                         "decision API returned invalid JSON: "
@@ -344,6 +374,9 @@ class DecisionClient:
                     )
                 ) from exc
             if not isinstance(data, dict):
+                logger.error(
+                    "decision API returned an unexpected JSON type: %s", type(data).__name__
+                )
                 raise DecisionError(
                     self._safe(
                         f"decision API returned an unexpected JSON type: {type(data).__name__}"
@@ -379,4 +412,12 @@ class DecisionClient:
 
         body = build_request(self._model, ticket_id, content, categories)
         data = await self._post(body)
-        return _parse_classification(data, float(threshold), max_candidates)
+        result = _parse_classification(data, float(threshold), max_candidates)
+        chosen = result.candidates[0].folder if result.candidates else ""
+        logger.info(
+            "decision ok request_id=%s folder=%s candidates=%d",
+            result.request_id,
+            chosen,
+            len(result.candidates),
+        )
+        return result

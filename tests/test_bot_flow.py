@@ -268,7 +268,7 @@ async def test_start_asks_pat_when_missing_offers_link_when_present(h: dict) -> 
     result = await flow.handle_start(USER, "jonan")
     text = "\n".join(result.replies)
     assert "token" in text.lower()
-    assert "public" in text.lower()
+    assert "personal-access-tokens" in text.lower()  # start prompt offers the PAT creation link
 
     await _capture_token(h)
     result = await flow.handle_start(USER, "jonan")

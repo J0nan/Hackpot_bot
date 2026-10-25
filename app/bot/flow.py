@@ -59,6 +59,7 @@ from app.db.repository import (
     set_resource_state,
     upsert_user,
 )
+from app.logging_config import get_logger
 from app.security.rate_limit import RateLimiter
 from app.security.sanitizers import sanitize_line, sanitize_url
 from app.security.token_store import decrypt_pat, encrypt_pat, looks_like_token, mask
@@ -92,6 +93,13 @@ _PLATFORM_UNSAFE = set("`|'\"\\[](){}")
 _INDEX_RE = re.compile(r"^\d+$", re.ASCII)
 
 ProgressSink = Callable[[str], Awaitable[None]]
+
+logger = get_logger(__name__)
+
+
+def _transition(resource_id: Any, old: str, new: str) -> None:
+    """S5: DEBUG state transition with the ``res=<id>`` correlation token."""
+    logger.debug("state res=%s %s->%s", resource_id, old, new)
 
 # --- user-visible wording (short, safe, no internals, never a secret) -------- #
 SLOW_DOWN = "You are sending too fast — please slow down and try again in a minute."
@@ -443,12 +451,14 @@ class ResourceFlow:
             return FlowResult((PAT_STILL_NEEDED,))
         await save_github_token(self.deps.conn, user_id, enc)
         await self._log("pat_captured", user_id, detail=mask(token))
+        logger.info("milestone=pat_captured user=%s", user_id)
         if resume is None:
             return FlowResult((PAT_SAVED,), delete_message=True)
         if resume.kind == "github":
             next_step = await self._fetch_and_decide(user_id, resume, token, progress)
         else:
             await set_resource_state(self.deps.conn, resume.id, "NEED_SUMMARY")
+            _transition(resume.id, resume.state, "NEED_SUMMARY")
             await self._log("summary_requested", user_id, resume.id)
             next_step = FlowResult((ASK_SUMMARY,))
         # the PAT message is always deleted after capture (S8)
@@ -469,11 +479,14 @@ class ResourceFlow:
         if stored is None:
             resource_id = await create_resource(self.deps.conn, user_id, url, kind)
             await set_resource_state(self.deps.conn, resource_id, "NEED_TOKEN")
+            _transition(resource_id, "NEW", "NEED_TOKEN")
+            logger.info("milestone=resource_created res=%s kind=%s waiting=pat", resource_id, kind)
             await self._log(
                 "resource_created", user_id, resource_id, detail=f"kind={kind}; waiting=pat"
             )
             return FlowResult((NEED_TOKEN_FOR_LINK,))
         resource_id = await create_resource(self.deps.conn, user_id, url, kind)
+        logger.info("milestone=resource_created res=%s kind=%s", resource_id, kind)
         await self._log("resource_created", user_id, resource_id, detail=f"kind={kind}")
         resource = await get_resource(self.deps.conn, resource_id)
         if kind == "github":
@@ -482,9 +495,11 @@ class ResourceFlow:
             except ValueError:
                 await self._log("pat_invalid", user_id, resource_id)
                 await set_resource_state(self.deps.conn, resource_id, "NEED_TOKEN")
+                _transition(resource_id, resource.state, "NEED_TOKEN")
                 return FlowResult((PAT_STILL_NEEDED,))
             return await self._fetch_and_decide(user_id, resource, token, progress)
         await set_resource_state(self.deps.conn, resource_id, "NEED_SUMMARY")
+        _transition(resource_id, resource.state, "NEED_SUMMARY")
         await self._log("summary_requested", user_id, resource_id)
         return FlowResult((ASK_SUMMARY,))
 
@@ -494,6 +509,7 @@ class ResourceFlow:
         parsed = parse_repo_url(resource.url)
         if parsed is None:  # kind said github but URL no longer parses: treat as other
             await set_resource_state(self.deps.conn, resource.id, "NEED_SUMMARY")
+            _transition(resource.id, resource.state, "NEED_SUMMARY")
             return FlowResult((ASK_SUMMARY,))
         owner, repo = parsed
         client = self.deps.make_github(token)
@@ -503,13 +519,17 @@ class ResourceFlow:
         except FetchError as exc:  # L7-5: detail with status stays in the audit row
             safe = str(exc)
             await set_resource_state(self.deps.conn, resource.id, "NEED_SUMMARY", error=safe)
+            _transition(resource.id, resource.state, "NEED_SUMMARY")
+            logger.warning("fetch_failed res=%s: %s", resource.id, safe)
             await self._log("fetch_failed", user_id, resource.id, detail=safe)
             return FlowResult((safe, ASK_SUMMARY))
         await self._log("readme_fetched", user_id, resource.id, detail=f"repo={owner}/{repo}")
+        logger.info("milestone=readme_fetched res=%s repo=%s/%s", resource.id, owner, repo)
         description = sanitize_line(str(meta.get("description") or ""), _DESC_MAX)
         excerpt = readme[:README_EXCERPT_CHARS]  # L7-2
         context = "\n\n".join(part for part in (description, excerpt) if part)
         await set_resource_state(self.deps.conn, resource.id, "NEW", context=context)
+        _transition(resource.id, resource.state, "NEW")
         return await self.handle_decision(user_id, progress)
 
     async def _record_summary(
@@ -545,6 +565,8 @@ class ResourceFlow:
         except DecisionError as exc:  # L7-5: status/message audited, never shown raw
             safe = str(exc)
             await set_resource_state(self.deps.conn, resource.id, "FAILED", error=safe)
+            _transition(resource.id, resource.state, "FAILED")
+            logger.warning("decision_failed res=%s: %s", resource.id, safe)
             await self._log("decision_failed", user_id, resource.id, detail=safe)
             return FlowResult((DECISION_FAILED_USER,))
 
@@ -561,6 +583,13 @@ class ResourceFlow:
             raw_json=result.raw,
         )
         await set_resource_state(self.deps.conn, resource.id, "AWAITING_PLACEMENT")
+        _transition(resource.id, resource.state, "AWAITING_PLACEMENT")
+        logger.info(
+            "milestone=decision_recorded res=%s request_id=%s candidates=%d",
+            resource.id,
+            result.request_id,
+            len(result.candidates),
+        )
         await self._log(
             "decision_recorded",
             user_id,
@@ -608,6 +637,7 @@ class ResourceFlow:
             folder=folder,
             entry_line=_dump_iv(iv),
         )
+        _transition(resource.id, resource.state, "AWAITING_ENTRY_INFO")
         await self._log("placement_chosen", user_id, resource.id, detail=f"folder={folder}")
 
         replies: list[str] = []
@@ -741,8 +771,10 @@ class ResourceFlow:
             await set_resource_state(
                 self.deps.conn, resource.id, "AWAITING_ENTRY_INFO", entry_line=_dump_iv(iv)
             )
+            _transition(resource.id, resource.state, "AWAITING_ENTRY_INFO")
             return await self._advance(user_id, resource.id)
         await set_resource_state(self.deps.conn, resource.id, "CONFIRMING", entry_line=line)
+        _transition(resource.id, resource.state, "CONFIRMING")
         await self._log("entry_preview", user_id, resource.id, detail=f"folder={resource.folder}")
         return FlowResult((f"{PREVIEW}\n{line}",), keyboard=ConfirmKB(resource.folder))
 
@@ -788,12 +820,16 @@ class ResourceFlow:
                 _first_paragraph(resource.context),
             )
         except DuplicateError as exc:
+            logger.warning("commit_duplicate res=%s: %s", resource.id, str(exc))
             await self._log("commit_duplicate", user_id, resource.id, detail=str(exc))
             return FlowResult((str(exc),))
         except FetchError as exc:  # L7-5: audited verbatim, reminded publicly
+            logger.warning("commit_failed res=%s: %s", resource.id, str(exc))
             await self._log("commit_failed", user_id, resource.id, detail=str(exc))
             return FlowResult((str(exc) + COMMIT_PUBLIC_REMINDER,))
         await set_resource_state(self.deps.conn, resource.id, "COMMITTED", commit_url=commit_url)
+        _transition(resource.id, resource.state, "COMMITTED")
+        logger.info("milestone=commit_done res=%s url=%s", resource.id, commit_url)
         await self._log("committed", user_id, resource.id, detail=commit_url)
         return FlowResult(
             (
@@ -807,6 +843,7 @@ class ResourceFlow:
         if resource is None:
             return FlowResult((NOTHING_PENDING,))
         await set_resource_state(self.deps.conn, resource.id, "CANCELLED")
+        _transition(resource.id, resource.state, "CANCELLED")
         await self._log("cancelled", user_id, resource.id, detail=f"was={resource.state}")
         return FlowResult((CANCELLED_MSG,))
 
@@ -817,6 +854,9 @@ class ResourceFlow:
         return FlowResult((FORGOTTEN,))
 
     async def handle_unauthorized(self, user_id: int | None, username: str | None) -> FlowResult:
-        """S9: silent. The only observable effect is the audit row."""
+        """S9: silent to the chat. The only user-facing effect is none; an audit
+        row is written and an operator-facing WARNING records the ignored update
+        (id + username only, no content)."""
+        logger.warning("unauthorized_ignored res=unknown id=%s user=%s", user_id, username or "")
         await self._log("unauthorized_ignored", user_id, detail=f"user={username or ''}")
         return FlowResult()

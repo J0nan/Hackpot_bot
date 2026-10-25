@@ -22,6 +22,9 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from app.config import REPO_RE
+from app.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # --- S13: the target repo's contribution guidelines -------------------------- #
 
@@ -334,14 +337,22 @@ class GitHubClient:
         *,
         params: dict[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
+        log_hint: str = "",
     ) -> httpx.Response:
         url = f"{self.BASE}{path}"
+        # S5: DEBUG request summary. Never the request body — `log_hint` carries
+        # only safe coordinates (branch, byte count), never content.
+        logger.debug("github %s %s%s", method, path, f" {log_hint}" if log_hint else "")
         try:
-            return await self._client.request(
+            response = await self._client.request(
                 method, url, headers=self._headers, params=params, json=json_body
             )
         except httpx.HTTPError as exc:  # timeout, connect error, protocol error
+            logger.warning("github %s %s unreachable res=unknown-ok (%s)", method, path, type(exc).__name__)
             raise FetchError(f"GitHub is unreachable right now. {PUBLIC_HINT}", public_hint=True) from exc
+        if response.status_code >= 400:
+            logger.warning("github %s %s -> HTTP %d res=unknown-ok", method, path, response.status_code)
+        return response
 
     @staticmethod
     def _payload(response: httpx.Response, error: FetchError) -> Any:
@@ -396,6 +407,7 @@ class GitHubClient:
             "GET",
             f"/repos/{self.target_repo}/contents/{quote(path, safe='/')}",
             params={"ref": branch},
+            log_hint=f"branch={branch}",
         )
         if response.status_code == 404:
             return None, ""
@@ -430,7 +442,10 @@ class GitHubClient:
         if sha is not None:
             payload["sha"] = sha
         response = await self._request(
-            "PUT", f"/repos/{self.target_repo}/contents/{quote(path, safe='/')}", json_body=payload
+            "PUT",
+            f"/repos/{self.target_repo}/contents/{quote(path, safe='/')}",
+            json_body=payload,
+            log_hint=f"branch={branch} bytes={len(content.encode('utf-8'))}",
         )
         if response.status_code == 409:
             raise ConflictError(
@@ -441,6 +456,8 @@ class GitHubClient:
         url = self._commit_url(data)
         if not url:
             raise FetchError(f"GitHub did not confirm the commit for {path}.")
+        # S5: INFO milestone — the commit landed; url is public, carries no secret.
+        logger.info("github commit ok path=%s branch=%s url=%s", path, branch, url)
         return url
 
     @staticmethod
@@ -483,6 +500,7 @@ class GitHubClient:
             new_text, section_status = insert_entry(base, entry_line)
             if section_status == "duplicate":
                 # Never echo the admin-supplied bullet into the error (S12).
+                logger.warning("github duplicate path=%s res=unknown-ok (nothing committed)", path)
                 raise DuplicateError(
                     f"That link is already listed in {path} — nothing was committed."
                 )

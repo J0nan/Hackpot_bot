@@ -16,6 +16,8 @@ from cryptography.fernet import Fernet, InvalidToken  # noqa: F401  (key validat
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.logging_config import LEVELS
+
 # github.com owner/repo (owner max 39, repo max 100 chars)
 REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,38})/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$")
 # Hackpot leaf category path: "NN_Domain_Name/Sub_Category"
@@ -49,6 +51,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SECRETS_ENCRYPTION_KEY", "fernet_key")
     )
     rate_limit_per_min: int = Field(default=10, ge=1, le=1000)
+    # LOG_LEVEL (env, case-insensitive via model_config) — drives setup_logging.
+    # Default keeps every existing Settings construction green (S6).
+    log_level: str = "INFO"
 
     @field_validator("authorized_user_ids", mode="before")
     @classmethod
@@ -102,6 +107,14 @@ class Settings(BaseSettings):
         if not value.startswith("https://"):
             raise ValueError("QWEN_API_URL must be an https:// URL")
         return value.rstrip("/")
+
+    @field_validator("log_level")
+    @classmethod
+    def _check_log_level(cls, value: str) -> str:
+        cleaned = (value or "").strip().upper()
+        if cleaned not in LEVELS:
+            raise ValueError(f"LOG_LEVEL must be one of {', '.join(LEVELS)}, got {value!r}")
+        return cleaned
 
     @field_validator("fernet_key")
     @classmethod

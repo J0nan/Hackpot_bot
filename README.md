@@ -91,6 +91,7 @@ names the offending variable.
 | `DB_PATH` | no | `data/hackpot.sqlite3` | SQLite file. **Inside the container the image already sets `/app/data/hackpot.sqlite3`** — leave it unset there, or keep any override under `/app/data/`, or the database lands outside the volume and disappears on rebuild. |
 | `SECRETS_ENCRYPTION_KEY` | yes | — | Fernet key from step 2. Rotating it orphans every stored token (users must `/start` again). |
 | `RATE_LIMIT_PER_MIN` | no | `10` | Messages per user per minute (1–1000); over budget gets one "slow down" reply. |
+| `LOG_LEVEL` | no | `INFO` | Stdlib level — `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` (case-insensitive), drives stdout verbosity. See **Logging & debugging** below; credentials are redacted at every level. |
 
 ### `CATEGORIES_JSON` shape
 
@@ -128,6 +129,72 @@ verified against `main`; note that the ODD feature doc still carries a plan-time
 
 If the target repo's tree changes, update `CATEGORIES_JSON` and recreate the container —
 no code change is needed.
+
+---
+
+## Logging & debugging
+
+The bot logs to **stdout** with the standard levels, driven by one environment
+variable. Docker captures stdout, so `docker compose logs` is the only interface
+you need — there is no log file and the read-only rootfs is never touched.
+
+```bash
+docker compose logs -f bot      # live stream, exactly what the container prints
+```
+
+Raise the level by setting `LOG_LEVEL` in `.env` and recreating the container:
+
+```bash
+# .env
+LOG_LEVEL=DEBUG
+docker compose up -d --force-recreate
+```
+
+`LOG_LEVEL` accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`
+(case-insensitive). The default is `INFO`; an invalid value stops the container at
+startup with an error naming the allowed values.
+
+### What each level emits
+
+| Level | What you get |
+|---|---|
+| `DEBUG` | GitHub request summaries (`GET`/`PUT` + path + branch, content is never logged beyond a byte count) and bot state transitions (`state res=<id> OLD->NEW`). |
+| `INFO` | The startup banner and "starting Telegram polling"; milestones — PAT captured, resource created, README fetched, `decision ok request_id=<id> folder=<chosen> candidates=<n>`, `github commit ok … url=<commit>`, and `milestone=commit_done res=<id>`. |
+| `WARNING` | Decision retries (`decision attempt <n>/3 failed with HTTP <status> (<class>); retrying`), decision/fetch/commit failures (carrying the HTTP status and a `res=<id>` correlation token), duplicate commits, and ignored updates from unauthorized chats (id + username only). |
+| `ERROR` | Unexpected exceptions with a full traceback — most often the polling loop dying (e.g. a Telegram **401** from a bad/revoked `TELEGRAM_BOT_TOKEN`), or a decision request exhausting its retries. |
+| `CRITICAL` | A valid `LOG_LEVEL` ceiling, but nothing in the app emits it today — it is reserved for an operator who wants to silence everything below a fatal alert. |
+
+`res=<id>` (the resource id) and `request_id` tie a burst of lines back to one
+submission; filter the stream with `docker compose logs bot | grep "res=7"`.
+
+### Three worked symptoms
+
+1. **`Restarting` loop after a bad token** — the Telegram **401** surfaces as an
+   `ERROR` line with a traceback (`[app.main] unexpected error during polling`).
+   The traceback names the failure but **never prints the token** (it is redacted
+   at the handler). Fix `TELEGRAM_BOT_TOKEN` and recreate.
+2. **Decision retry storm** — raise `LOG_LEVEL` and you see the sequence, e.g.:
+   ```
+   WARNING … [app.services.decision] decision attempt 1/3 failed with HTTP 500 (5xx); retrying
+   WARNING … [app.services.decision] decision attempt 2/3 failed with HTTP 503 (5xx); retrying
+   WARNING … [app.services.decision] decision attempt 3/3 rejected with HTTP 503 (5xx)
+   ```
+   That points at the decision API, not your inputs.
+3. **A failed classification** — the flow logs the audited reason with its
+   correlation token, e.g. `WARNING … [app.bot.flow] decision_failed res=7: …`, and
+   the successful path would instead show
+   `INFO … decision ok request_id=req-… folder=… candidates=2`. The `request_id`
+   matches the row written to the `decisions` audit table.
+
+### Credentials never reach the log stream
+
+Every record — **including lines emitted by third-party loggers such as
+aiogram** — passes through a redaction filter attached to the one stdout handler.
+The configured bot token and Qwen key, and any shaped secret (`ghp_`/`gho_`/
+`ghu_`/`ghs_`/`ghr_`, `github_pat_`, `sk-…`, or an `Authorization: …` header) in
+the message **or a formatted exception traceback**, are replaced by `***` before
+the line is written. This is enforced below your code, so a debug line — or a
+crash — can never leak a credential, at any log level.
 
 ---
 

@@ -20,13 +20,26 @@ from app.bot.flow import AppDeps, ResourceFlow, make_decision_factory, make_gith
 from app.bot.handlers import router
 from app.config import Settings
 from app.db.database import open_db
+from app.logging_config import get_logger, setup_logging
 from app.security.rate_limit import RateLimiter
 
 ALLOWED_UPDATES = ["message", "callback_query"]
 
+logger = get_logger(__name__)
+
 
 async def main() -> None:
     settings = Settings()  # fail-fast: invalid env stops before any I/O
+    # Configure logging first (S2/S4): the bot token and Qwen key are handed to
+    # the redaction filter so no credential can ever reach the stream.
+    setup_logging(
+        settings.log_level,
+        secrets=(
+            settings.telegram_bot_token.get_secret_value(),
+            settings.qwen_api_key.get_secret_value(),
+        ),
+    )
+    logger.info("hackpot bot starting repo=%s level=%s", settings.target_repo, settings.log_level)
     conn = await open_db(settings.db_path)
     http = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
     try:
@@ -42,7 +55,11 @@ async def main() -> None:
         bot = Bot(token=settings.telegram_bot_token.get_secret_value())
         dp = Dispatcher(storage=MemoryStorage(), deps=deps, flow=flow)
         dp.include_router(router)
+        logger.info("starting Telegram polling")
         await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
+    except Exception:  # noqa: BLE001 - log the traceback, then let it propagate unchanged
+        logger.error("unexpected error during polling", exc_info=True)
+        raise
     finally:
         await http.aclose()
         await conn.close()
