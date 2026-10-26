@@ -1,7 +1,7 @@
 """GitHub service: repo-URL detection, S13 bullet building/insertion, Contents API.
 
-Pure helpers (`parse_repo_url`, `build_entry_line`, `insert_entry`, `leaf_template`)
-do no I/O and are unit-testable on their own. `GitHubClient` is the only network
+Pure helpers (`parse_repo_url`, `build_entry_line`, `parse_entry_line`,
+`insert_entry`, `leaf_template`) do no I/O and are unit-testable on their own. `GitHubClient` is the only network
 surface; it takes an already-configured `httpx.AsyncClient` (timeouts/retries live
 there) and the sender's PAT (S8), and every failure is reported as a short, safe
 `FetchError` that never contains the token (S12, S15).
@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import binascii
 import re
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -53,6 +54,13 @@ _RESOURCES_HEADING_RE = re.compile(r"^[ \t]*##[ \t]+Resources[ \t]*$", re.IGNORE
 _NEXT_HEADING_RE = re.compile(r"^[ \t]*##[ \t]")  # `###` is not a section end
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 _TAG_UNSAFE_RE = re.compile(r"[\s`'\"\\|]")
+# --- pasted-bullet grammar (parse_entry_line; mirrors build_entry_line output) ---
+_ENTRY_DASH_RE = re.compile(r"^-[ \t]")
+_ENTRY_LINK_RE = re.compile(
+    r"^-[ \t]+\[(?P<name>[^\]]*)\]\((?P<url>[^)]*)\)[ \t]*(?P<rest>.*)$"
+)
+_ENTRY_SEPARATOR_RE = re.compile(rf"^(?:{re.escape(EM_DASH)}|-)[ \t]+(?P<body>.*)$")
+_ENTRY_TAG_RE = re.compile(r"[ \t]*`(?P<tag>[^`]*)`[ \t]*$")
 
 #: S15 — every read failure tells the caller to ask the user for the info and
 #: to remember that all links must be public. Safe to show to an admin verbatim.
@@ -84,6 +92,15 @@ class ConflictError(FetchError):
 
 class DuplicateError(FetchError):
     """The canonical URL is already listed in the leaf README (flow step 7)."""
+
+
+class EntryLineError(ValueError):
+    """A pasted entry bullet is not a parseable `- [Name](url) …` line (S4.3/S4.4).
+
+    The message names the single problem in short, user-safe terms and never
+    echoes the pasted payload. Derives from ValueError so handlers that already
+    catch format errors keep working.
+    """
 
 
 # --------------------------------------------------------------------------- #
@@ -146,17 +163,8 @@ def _one_line(value: str, field: str, limit: int) -> str:
     return text
 
 
-def build_entry_line(
-    name: str,
-    url: str,
-    description: str,
-    type_tag: str,
-    cost_tag: str = "",
-    platform_tags: list[str] | None = None,
-) -> str:
-    """Build one S13 bullet: `- [Name](url) — Description. `type:tool` `free` `linux``."""
-    display = _one_line(name, "name", MAX_NAME_LEN)
-    summary = _one_line(description, "description", MAX_DESCRIPTION_LEN)
+def _normalize_url(url: str) -> str:
+    """Shared URL rule for build and parse: https-only, no whitespace, <=2000 chars."""
     link = (url or "").strip()
     if not link:
         raise ValueError("entry url must not be empty")
@@ -166,15 +174,12 @@ def build_entry_line(
         raise ValueError("entry url must be an https:// URL")
     if len(link) > MAX_URL_LEN:
         raise ValueError(f"entry url exceeds the {MAX_URL_LEN} character limit")
-    if type_tag not in ENTRY_TYPES:
-        raise ValueError(f"invalid type tag {type_tag!r}: expected one of {', '.join(ENTRY_TYPES)}")
-    cost = (cost_tag or "").strip()
-    if cost and cost not in COST_TAGS:
-        raise ValueError(f"invalid cost tag {cost!r}: expected one of {', '.join(COST_TAGS)}")
+    return link
 
-    tags: list[str] = [f"type:{type_tag}"]
-    if cost:
-        tags.append(cost)
+
+def _normalize_platform_tags(platform_tags: list[str] | tuple[str, ...] | None) -> list[str]:
+    """Shared tag rule: trim, skip empty, ban unsafe chars, <=40 chars, dedupe (CI)."""
+    tags: list[str] = []
     seen: set[str] = set()
     for raw in platform_tags or []:
         tag = (raw or "").strip()
@@ -188,11 +193,94 @@ def build_entry_line(
             continue
         seen.add(tag.casefold())
         tags.append(tag)
+    return tags
+
+
+def build_entry_line(
+    name: str,
+    url: str,
+    description: str,
+    type_tag: str,
+    cost_tag: str = "",
+    platform_tags: list[str] | None = None,
+) -> str:
+    """Build one S13 bullet: `- [Name](url) — Description. `type:tool` `free` `linux``."""
+    display = _one_line(name, "name", MAX_NAME_LEN)
+    summary = _one_line(description, "description", MAX_DESCRIPTION_LEN)
+    link = _normalize_url(url)
+    if type_tag not in ENTRY_TYPES:
+        raise ValueError(f"invalid type tag {type_tag!r}: expected one of {', '.join(ENTRY_TYPES)}")
+    cost = (cost_tag or "").strip()
+    if cost and cost not in COST_TAGS:
+        raise ValueError(f"invalid cost tag {cost!r}: expected one of {', '.join(COST_TAGS)}")
+
+    tags: list[str] = [f"type:{type_tag}"]
+    if cost:
+        tags.append(cost)
+    tags.extend(_normalize_platform_tags(platform_tags))
 
     # "strips trailing punctuation from description then appends `.`"
     sentence = summary.rstrip(".,;:!?").rstrip() or summary
     rendered = " ".join(f"`{tag}`" for tag in tags)
     return f"- [{display}]({link}) {EM_DASH} {sentence}. {rendered}"
+
+
+@dataclass(frozen=True)
+class ParsedEntry:
+    """Fields recovered from a pasted entry bullet; the flow re-validates and rebuilds."""
+
+    name: str
+    url: str
+    description: str
+    tags: tuple[str, ...]
+
+
+def parse_entry_line(line: str) -> ParsedEntry:
+    """Parse a pasted S13 bullet back into its fields (edit-confirm flow, S4.3).
+
+    Accepts exactly what `build_entry_line` emits, plus the minimal tolerances a
+    human editing needs: leading/trailing whitespace anywhere, `-` (hyphen-minus)
+    as an equivalent of the em dash separator, an optional trailing period on the
+    description, optional tags, and multiple spaces between tokens. The url is
+    returned raw as typed; URL locking/comparison is the flow's job via
+    `_canonical_url`. Name, url, description and tag limits are the same checks
+    `build_entry_line` uses, so anything that parses here also rebuilds.
+    """
+    text = (line or "").strip()
+    if not _ENTRY_DASH_RE.match(text):
+        raise EntryLineError("missing leading dash: the line must start with '- '")
+    link_match = _ENTRY_LINK_RE.match(text)
+    if link_match is None:
+        raise EntryLineError("missing link: the line must contain '[name](url)'")
+    sep_match = _ENTRY_SEPARATOR_RE.match(link_match.group("rest"))
+    if sep_match is None:
+        raise EntryLineError(
+            f"missing description separator: '{EM_DASH}' (or '-') must follow the link"
+        )
+    body = sep_match.group("body")
+
+    tags: list[str] = []
+    while True:  # tags are the trailing `...` run, if any
+        tag_match = _ENTRY_TAG_RE.search(body)
+        if tag_match is None:
+            break
+        tags.append(tag_match.group("tag"))
+        body = body[: tag_match.start()]
+    tags.reverse()
+
+    description = body.strip()
+    if description.endswith("."):
+        description = description[:-1].rstrip()
+
+    try:
+        name = _one_line(link_match.group("name"), "name", MAX_NAME_LEN)
+        summary = _one_line(description, "description", MAX_DESCRIPTION_LEN)
+        link = _normalize_url(link_match.group("url"))
+        normalized_tags = tuple(_normalize_platform_tags(tags))
+    except ValueError as exc:
+        raise EntryLineError(str(exc)) from exc
+
+    return ParsedEntry(name=name, url=link, description=summary, tags=normalized_tags)
 
 
 def insert_entry(readme_text: str, entry_line: str) -> tuple[str, str]:

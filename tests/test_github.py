@@ -18,12 +18,16 @@ from app.services.github import (
     ENTRY_TYPES,
     ConflictError,
     DuplicateError,
+    EntryLineError,
     FetchError,
     GitHubClient,
+    ParsedEntry,
+    _canonical_url,
     build_entry_line,
     insert_entry,
     leaf_template,
     leaf_title_from_path,
+    parse_entry_line,
     parse_repo_url,
 )
 
@@ -189,6 +193,198 @@ def test_build_entry_line_dedupes_platform_tags_keeping_order() -> None:
         "N", "https://a.dev", "Desc", "docs", "freemium", ["linux", "Windows", "linux", "docker"]
     )
     assert line.endswith("Desc. `type:docs` `freemium` `linux` `Windows` `docker`")
+
+
+# --------------------------------------------------------------------------- #
+# parse_entry_line (entry-bullet-edit-confirm S4.3/S4.4)
+# --------------------------------------------------------------------------- #
+
+CANONICAL = (
+    "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
+    "`type:tool` `free` `linux`"
+)
+
+
+def rebuild_entry_line(parsed: ParsedEntry) -> str:
+    """Rebuild like the flow will: map the parsed tags back onto build's inputs."""
+    tags = list(parsed.tags)
+    type_tag = ""
+    if tags and tags[0].startswith("type:"):
+        type_tag = tags.pop(0)[len("type:"):]
+    cost_tag = ""
+    if tags and tags[0] in COST_TAGS:
+        cost_tag = tags.pop(0)
+    return build_entry_line(parsed.name, parsed.url, parsed.description, type_tag, cost_tag, tags)
+
+
+def test_parse_entry_line_returns_fields() -> None:
+    assert parse_entry_line(CANONICAL) == ParsedEntry(
+        name="Amass",
+        url="https://github.com/owasp-amass/amass",
+        description="Subdomain enumeration",
+        tags=("type:tool", "free", "linux"),
+    )
+
+
+def test_parse_entry_line_of_build_output_matches_build_inputs() -> None:
+    line = build_entry_line(
+        "Amass", "https://github.com/owasp-amass/amass", "Subdomain enumeration", "tool", "free", ["linux"]
+    )
+    assert parse_entry_line(line) == ParsedEntry(
+        name="Amass",
+        url="https://github.com/owasp-amass/amass",
+        description="Subdomain enumeration",
+        tags=("type:tool", "free", "linux"),
+    )
+
+
+def test_parse_entry_line_is_frozen_dataclass() -> None:
+    parsed = parse_entry_line(CANONICAL)
+    with pytest.raises(AttributeError):
+        parsed.name = "other"  # type: ignore[misc]
+
+
+def test_parse_entry_line_returns_url_as_typed() -> None:
+    parsed = parse_entry_line("- [N](https://Example.COM/AbC) — Desc. `type:tool`")
+    assert parsed.url == "https://Example.COM/AbC"  # host case preserved; flow compares via _canonical_url
+    assert _canonical_url(parsed.url) == "example.com/AbC"
+
+
+@pytest.mark.parametrize(
+    "name,url,description,type_tag,cost_tag,platform_tags",
+    [
+        (
+            "Amass",
+            "https://github.com/owasp-amass/amass",
+            "Subdomain enumeration",
+            "tool",
+            "free",
+            ["linux", "docker"],
+        ),
+        ("Nmap", "https://nmap.org", "Port scanner", "tool", "", []),
+        (
+            "Zap and Burp",
+            "https://zaproxy.org",
+            "Herramienta de pentesting, con acentos: é and emoji 🧪",
+            "docs",
+            "freemium",
+            ["gui", "Web"],
+        ),
+        ("A — B Tool", "https://unicode.example/路径", "Name carries an em-dash — café", "course", "paid", []),
+    ],
+)
+def test_parse_entry_line_roundtrip_is_idempotent(
+    name: str, url: str, description: str, type_tag: str, cost_tag: str, platform_tags: list[str]
+) -> None:
+    line = build_entry_line(name, url, description, type_tag, cost_tag, platform_tags)
+    assert rebuild_entry_line(parse_entry_line(line)) == line
+
+
+def test_parse_entry_line_accepts_no_tags() -> None:
+    parsed = parse_entry_line("- [Nmap](https://nmap.org) — Port scanner")
+    assert parsed == ParsedEntry("Nmap", "https://nmap.org", "Port scanner", ())
+
+
+def test_parse_entry_line_hyphen_minus_separator_equals_em_dash_form() -> None:
+    em = build_entry_line("Amass", "https://a.dev", "Scanner", "tool", "free", ["linux"])
+    hyphen = em.replace(") — ", ") - ")
+    assert hyphen != em
+    assert parse_entry_line(hyphen) == parse_entry_line(em)
+
+
+def test_parse_entry_line_tolerates_whitespace_and_extra_spaces() -> None:
+    parsed = parse_entry_line(
+        "   -   [Amass](https://a.dev)   —    Subdomain enumeration.   `type:tool`   `free`   "
+    )
+    assert parsed == ParsedEntry(
+        name="Amass",
+        url="https://a.dev",
+        description="Subdomain enumeration",
+        tags=("type:tool", "free"),
+    )
+
+
+def test_parse_entry_line_trailing_period_optional_and_dedupes_tags() -> None:
+    a = parse_entry_line("- [N](https://a.dev) — Desc `type:tool` `linux` `Linux`")
+    b = parse_entry_line("- [N](https://a.dev) — Desc. `type:tool` `linux`")
+    assert a == b == ParsedEntry("N", "https://a.dev", "Desc", ("type:tool", "linux"))
+
+
+@pytest.mark.parametrize(
+    "line,needle",
+    [
+        ("[Amass](https://a.dev) — Desc.", "missing leading dash"),
+        ("", "missing leading dash"),
+        ("- Amass — Desc.", "missing link"),
+        ("- [Amass] https://a.dev — Desc.", "missing link"),
+        ("- [Amass](https://a.dev) Desc.", "missing description separator"),
+        ("- [](https://a.dev) — Desc. `type:tool`", "entry name must not be empty"),
+        ("- [](https://a.dev) — Desc. `type:tool`", "name"),
+        ("- [Amass](https://a.dev) — `type:tool`", "entry description must not be empty"),
+        ("- [Amass]() — Desc. `type:tool`", "entry url must not be empty"),
+        (f"- [{'A' * 121}](https://a.dev) — Desc. `type:tool`", "entry name exceeds the 120 character limit"),
+        (f"- [Amass](https://a.dev) — {'D' * 501}. `type:tool`", "entry description exceeds the 500 character limit"),
+        ("- [Amass](http://a.dev) — Desc. `type:tool`", "entry url must be an https:// URL"),
+        ("- [Amass](https://a .dev) — Desc. `type:tool`", "entry url must not contain whitespace"),
+        (f"- [Amass](https://a.dev/{'y' * 2000}) — Desc. `type:tool`", "entry url exceeds the 2000 character limit"),
+        ("- [Amass](https://a.dev) — Desc. `bad tag`", "invalid platform tag"),
+        (f"- [Amass](https://a.dev) — Desc. `{'t' * 41}`", "platform tag exceeds the 40 character limit"),
+    ],
+)
+def test_parse_entry_line_errors_name_the_problem(line: str, needle: str) -> None:
+    with pytest.raises(EntryLineError) as excinfo:
+        parse_entry_line(line)
+    assert needle in str(excinfo.value)
+
+
+def test_parse_entry_line_error_is_value_error() -> None:
+    assert issubclass(EntryLineError, ValueError)
+    with pytest.raises(ValueError):
+        parse_entry_line("not a bullet")
+
+
+def test_parse_entry_line_error_does_not_echo_payload() -> None:
+    huge = "x" * 5000
+    with pytest.raises(EntryLineError) as excinfo:
+        parse_entry_line(f"- [{huge}](https://a.dev) — Desc. `type:tool`")
+    assert huge not in str(excinfo.value)
+    assert len(str(excinfo.value)) < 200
+
+
+# --------------------------------------------------------------------------- #
+# behavior preservation across the validation refactor (T1 differential guard)
+# --------------------------------------------------------------------------- #
+
+def test_build_entry_line_known_output_unchanged_after_shared_validation_refactor() -> None:
+    assert build_entry_line(
+        "Amass",
+        "https://github.com/owasp-amass/amass",
+        "Subdomain enumeration.",
+        "tool",
+        "free",
+        ["linux", "Windows", "linux", "docker"],
+    ) == (
+        "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
+        "`type:tool` `free` `linux` `Windows` `docker`"
+    )
+
+
+def test_build_entry_line_error_messages_unchanged_after_shared_validation_refactor() -> None:
+    with pytest.raises(ValueError) as name_err:
+        build_entry_line(" ", "https://a.dev", "D", "tool", "free")
+    assert str(name_err.value) == "entry name must not be empty"
+    with pytest.raises(ValueError) as url_err:
+        build_entry_line("N", "http://a.dev", "D", "tool", "free")
+    assert str(url_err.value) == "entry url must be an https:// URL"
+    with pytest.raises(ValueError) as tag_err:
+        build_entry_line("N", "https://a.dev", "D", "tool", "free", ["bad tag"])
+    assert str(tag_err.value) == "invalid platform tag 'bad tag'"
+
+
+def test_canonical_url_still_usable() -> None:
+    assert _canonical_url("HTTPS://Example.COM/a/b/") == "example.com/a/b"
+    assert _canonical_url("https://example.com") == "example.com"
+    assert _canonical_url("   ") == ""
 
 
 # --------------------------------------------------------------------------- #
