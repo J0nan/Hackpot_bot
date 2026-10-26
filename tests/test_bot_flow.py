@@ -269,11 +269,13 @@ async def test_start_asks_pat_when_missing_offers_link_when_present(h: dict) -> 
     text = "\n".join(result.replies)
     assert "token" in text.lower()
     assert "personal-access-tokens" in text.lower()  # start prompt offers the PAT creation link
+    assert "public" in text.lower()  # S15: the public-links reminder is pinned, not replaced
 
     await _capture_token(h)
     result = await flow.handle_start(USER, "jonan")
     assert "link" in "\n".join(result.replies).lower()
     assert "github personal access" not in "\n".join(result.replies).lower()
+    assert "public" in "\n".join(result.replies).lower()  # S15 pinned in the returning-admin greeting too
 
 
 async def test_forget_deletes_stored_pat(h: dict) -> None:

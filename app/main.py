@@ -37,6 +37,7 @@ async def main() -> None:
         secrets=(
             settings.telegram_bot_token.get_secret_value(),
             settings.qwen_api_key.get_secret_value(),
+            settings.fernet_key.get_secret_value(),
         ),
     )
     logger.info("hackpot bot starting repo=%s level=%s", settings.target_repo, settings.log_level)

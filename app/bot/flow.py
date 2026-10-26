@@ -109,11 +109,12 @@ ASK_PAT_START = (
     "account, and I delete your message right after capture. Tip: a fine-grained "
     "token with contents:write on the Hackpot repo only stays revocable.\n"
     "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot\n"
+    "Remember: all links must be public."
 )
 GREETING_READY = (
     "👋 Welcome back! Send the https link of the resource you want indexed. GitHub "
     "repo links are read automatically; for anything else I will ask you for a "
-    "short summary."
+    "short summary.\nRemember: all links must be public."
 )
 PAT_SAVED = (
     "✅ Token stored (encrypted). Send the https link of the resource you want "

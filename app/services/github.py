@@ -348,10 +348,13 @@ class GitHubClient:
                 method, url, headers=self._headers, params=params, json=json_body
             )
         except httpx.HTTPError as exc:  # timeout, connect error, protocol error
-            logger.warning("github %s %s unreachable res=unknown-ok (%s)", method, path, type(exc).__name__)
+            logger.warning("github %s %s unreachable (%s)", method, path, type(exc).__name__)
             raise FetchError(f"GitHub is unreachable right now. {PUBLIC_HINT}", public_hint=True) from exc
-        if response.status_code >= 400:
-            logger.warning("github %s %s -> HTTP %d res=unknown-ok", method, path, response.status_code)
+        if response.status_code == 404:
+            # 404 is normal control flow for get_file ("leaf README not created yet")
+            logger.debug("github %s %s -> HTTP 404 (expected miss path)", method, path)
+        elif response.status_code >= 400:
+            logger.warning("github %s %s -> HTTP %d", method, path, response.status_code)
         return response
 
     @staticmethod
@@ -500,7 +503,7 @@ class GitHubClient:
             new_text, section_status = insert_entry(base, entry_line)
             if section_status == "duplicate":
                 # Never echo the admin-supplied bullet into the error (S12).
-                logger.warning("github duplicate path=%s res=unknown-ok (nothing committed)", path)
+                logger.warning("github duplicate path=%s (nothing committed)", path)
                 raise DuplicateError(
                     f"That link is already listed in {path} — nothing was committed."
                 )
