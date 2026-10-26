@@ -161,15 +161,14 @@ class TestApplyRefresh:
 
 
 class TestCategoryRefreshLoop:
-    async def test_sleeps_until_slot_then_refreshes(self):
+    async def test_refreshes_at_startup_then_sleeps_until_slot(self):
         now = datetime(2026, 10, 26, 22, 0, 0)
         delays: list[float] = []
         refreshed: list[Settings] = []
 
         async def sleep(seconds: float) -> None:
-            if delays:
-                raise asyncio.CancelledError  # second wake-up: shutdown
             delays.append(seconds)
+            raise asyncio.CancelledError  # shutdown before the midnight wake
 
         async def to_thread(fn, *args):
             refreshed.append(args[0])
@@ -180,8 +179,31 @@ class TestCategoryRefreshLoop:
                 settings, sleep=sleep, to_thread=to_thread,
                 refresh=lambda s: dict(s.categories), now=lambda: now,
             )
-        assert delays == [2 * 3600]
+        # The refresh ran immediately at startup, then the loop armed the slot.
         assert refreshed == [settings]
+        assert delays == [2 * 3600]
+
+    async def test_startup_failure_still_schedules_the_slot(self):
+        slept: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            slept.append(seconds)
+            raise asyncio.CancelledError
+
+        settings = make_settings()
+
+        def boom(_settings):
+            raise RuntimeError("GitHub request failed")
+
+        with pytest.raises(asyncio.CancelledError):
+            await cs.category_refresh_loop(
+                settings, sleep=sleep, refresh=boom,
+                now=lambda: datetime(2026, 10, 26, 22, 0, 0),
+            )
+        # A dead startup sync is logged, not fatal: the nightly slot is armed
+        # and the current categories survive.
+        assert len(slept) == 1
+        assert settings.categories == {"01_Recon_and_OSINT/OSINT": "old curated"}
 
     async def test_refresh_failure_keeps_the_loop_alive(self):
         slept: list[float] = []
@@ -213,12 +235,13 @@ class TestCategoryRefreshLoop:
         async def sleep(seconds: float) -> None:
             raise asyncio.CancelledError
 
+        st = make_settings()
         with pytest.raises(asyncio.CancelledError):
             await cs.category_refresh_loop(
-                make_settings(), sleep=sleep,
+                st, sleep=sleep,
                 now=lambda: datetime(2026, 10, 26, 22, 0, 0),
             )
-        assert called == []  # never woke up, so never refreshed
+        assert called == [st]  # startup run fires before the first sleep
 
 
 class TestSettingsFields:

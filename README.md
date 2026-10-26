@@ -93,7 +93,7 @@ names the offending variable.
 | `RATE_LIMIT_PER_MIN` | no | `10` | Messages per user per minute (1–1000); over budget gets one "slow down" reply. |
 | `LOG_LEVEL` | no | `INFO` | Stdlib level — `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` (case-insensitive), drives stdout verbosity. See **Logging & debugging** below; credentials are redacted at every level. |
 | `CATEGORY_SYNC_ENABLED` | no | `true` | Master switch for the daily automatic category refresh (see **Daily category auto-sync** below). |
-| `CATEGORY_SYNC_TIME` | no | `00:00` | Local wall-clock `HH:MM` (24-hour) when the refresh runs every day. In docker the container clock is UTC unless `TZ` is set. |
+| `CATEGORY_SYNC_TIME` | no | `00:00` | Local wall-clock `HH:MM` (24-hour) of the daily refresh; a sync also runs once at every startup. In docker the container clock is UTC unless `TZ` is set. |
 | `CATEGORY_SYNC_KEEP_CURATED` | no | `false` | `true` protects hand-tuned criteria: the daily sync then fills only blank/placeholder leaves instead of overwriting with README intros. |
 | `GITHUB_TOKEN` | no | — | Optional read-only token. Raises the GitHub rate limit for the daily sync and `scripts/sync_categories.py`. Never logged. |
 
@@ -133,12 +133,13 @@ verified against `main`; note that the ODD feature doc still carries a plan-time
 
 ### Daily category auto-sync
 
-The repo structure is the source of truth: every day at `CATEGORY_SYNC_TIME`
-(local, default `00:00`) a background task in the bot fetches the live leaf
-tree of `TARGET_REPO@TARGET_BRANCH` plus each leaf's README intro, validates
-the merged map with the same contract as `CATEGORIES_JSON`, and **hot-swaps
-`settings.categories`** — the next decision request and the next category
-keyboard already use the fresh leaves, no restart needed. When the process can
+The repo structure is the source of truth: the bot's background task syncs the categories **once at startup and then every day at `CATEGORY_SYNC_TIME`**
+(local, default `00:00`) — it fetches the live leaf tree of `TARGET_REPO@TARGET_BRANCH`
+plus each leaf's README intro, validates the merged map with the same contract as
+`CATEGORIES_JSON`, and **hot-swaps `settings.categories`** — the next decision request
+and the next category keyboard already use the fresh leaves, no restart needed. A sync
+that fails (at startup or at the slot) is logged, keeps the current categories in force,
+and simply retries at the next slot. When the process can
 see a `.env` file (local runs) it is rewritten too, with a rolling `.env.bak`;
 inside docker compose the container has no `.env`, so only the in-memory swap
 happens. A failed or empty tree is refused and logged — the current

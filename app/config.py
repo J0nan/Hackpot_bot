@@ -55,10 +55,10 @@ class Settings(BaseSettings):
     # Default keeps every existing Settings construction green (S6).
     log_level: str = "INFO"
     # Daily automatic category sync (app.services.category_sync): a background
-    # task hot-swaps settings.categories every day at CATEGORY_SYNC_TIME
-    # (24h HH:MM, local wall clock) so the running bot and decision model use
-    # the latest Hackpot leaves without a restart. Defaults keep every
-    # existing construction green (all optional).
+    # task syncs once at startup and then every day at CATEGORY_SYNC_TIME
+    # (24h HH:MM, local wall clock), hot-swapping settings.categories so the
+    # running bot and decision model use the latest Hackpot leaves without a
+    # restart. Defaults keep every existing construction green (all optional).
     category_sync_enabled: bool = True
     category_sync_time: str = "00:00"
     category_sync_keep_curated: bool = False

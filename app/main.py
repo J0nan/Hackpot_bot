@@ -59,8 +59,9 @@ async def main() -> None:
         bot = Bot(token=settings.telegram_bot_token.get_secret_value())
         dp = Dispatcher(storage=MemoryStorage(), deps=deps, flow=flow)
         dp.include_router(router)
-        # Daily category refresh: wakes at CATEGORY_SYNC_TIME and hot-swaps
-        # settings.categories. No network at construction time.
+        # Daily category refresh: syncs once at startup, then wakes at
+        # CATEGORY_SYNC_TIME and hot-swaps settings.categories. No network at
+        # construction time (the first fetch runs inside the task).
         if settings.category_sync_enabled:
             sync_task = asyncio.create_task(category_refresh_loop(settings))
         logger.info("starting Telegram polling")

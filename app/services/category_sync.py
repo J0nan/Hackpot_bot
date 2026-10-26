@@ -8,10 +8,10 @@ the in-process pieces the running bot uses:
   contract as ``Settings._check_categories`` and hot-swap
   ``settings.categories`` so the next decision request and the next category
   keyboard already use the new leaves (no restart);
-* :func:`category_refresh_loop` — an asyncio task that wakes every day at the
-  configured local time (default ``00:00``, ``CATEGORY_SYNC_TIME``) and runs
-  the refresh; a failed sync keeps the previous categories and is retried at
-  the next slot.
+* :func:`category_refresh_loop` — an asyncio task that runs one refresh
+  immediately at startup, then wakes every day at the configured local time
+  (default ``00:00``, ``CATEGORY_SYNC_TIME``) and repeats the refresh; a
+  failed sync keeps the previous categories and is retried at the next slot.
 
 The repo is the source of truth (same rules as the script): leaf README intro
 > existing criteria > placeholder, removed leaves dropped. When a writable
@@ -369,28 +369,40 @@ async def category_refresh_loop(
 ) -> None:
     """Daily category sync for the whole life of the bot process.
 
-    Sleeps until ``settings.category_sync_time`` (local wall clock), runs
-    :func:`apply_refresh` off the event loop, and repeats. A failed refresh
-    is logged and the previous categories survive; the loop only exits when
-    cancelled (bot shutdown).
+    Runs one refresh **immediately at startup** so a restarted bot is current
+    without waiting for the slot, then sleeps until
+    ``settings.category_sync_time`` (local wall clock) and repeats. A failed
+    refresh is logged and the previous categories survive; the loop only
+    exits when cancelled (bot shutdown).
     """
     if refresh is None:
         refresh = apply_refresh
     now_fn = now if callable(now) else datetime.now
-    logger.info(
-        "daily category sync scheduled at %s local time (repo=%s@%s)",
-        settings.category_sync_time, settings.target_repo, settings.target_branch,
-    )
-    while True:
+
+    async def _run_once() -> None:
         try:
-            delay = seconds_until_next(now_fn(), settings.category_sync_time)
-            await sleep(delay)
             # fetch_* are sync httpx calls; run them outside the event loop.
             await to_thread(refresh, settings)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("category sync failed — keeping the current categories")
+
+    logger.info(
+        "category sync: running now at startup, then daily at %s local time (repo=%s@%s)",
+        settings.category_sync_time, settings.target_repo, settings.target_branch,
+    )
+    await _run_once()
+    while True:
+        try:
+            delay = seconds_until_next(now_fn(), settings.category_sync_time)
+            await sleep(delay)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("category sync scheduling failed — retrying the slot")
+            continue
+        await _run_once()
 
 
 def utc_stamp() -> str:
