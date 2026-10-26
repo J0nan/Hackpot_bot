@@ -162,11 +162,11 @@ async def _digest(h, rid):
     return hashlib.sha256(repr(tuple(r)).encode()).hexdigest()
 
 
-async def _to_confirming(h):
+async def _to_confirming(h, url: str = URL):
     flow = h["flow"]
     await flow.handle_start(USER, "verifier")
     await flow.handle_text(USER, "verifier", VALID_PAT)
-    await flow.handle_text(USER, "verifier", URL)
+    await flow.handle_text(USER, "verifier", url)
     await flow.handle_folder_choice(USER, CHOSEN)
     await flow.handle_callback(USER, "verifier", "tool")
     await flow.handle_text(USER, "verifier", "linux")
@@ -447,7 +447,8 @@ async def test_v5_confirm_and_cancel_delete_nothing(h):
     confirmed = await h["flow"].handle_confirm(USER)
     assert confirmed.delete_outgoing == ()
     assert (await _row(h, rid)).state == "COMMITTED"
-    rid2 = await _to_confirming(h)
+    # Distinct link: the second submission must not hit the intake duplicate gate.
+    rid2 = await _to_confirming(h, "https://github.com/VerifyOrg/probe-repo-2")
     await _press(h, "t")
     cancelled = await h["flow"].handle_cancel(USER)
     assert cancelled.delete_outgoing == ()

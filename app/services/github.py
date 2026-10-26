@@ -151,6 +151,21 @@ def _canonical_url(url: str) -> str:
     return f"{host}/{path}" if path else host
 
 
+def canonical_url_key(url: str) -> str:
+    """Canonical identity of a resource URL for the intake duplicate check.
+
+    GitHub repo URLs collapse to lower-case ``github.com/{owner}/{repo}``, so
+    www, host casing, trailing slashes, the ``.git`` suffix and deeper paths
+    (``/tree/…``, ``/issues/3``) all match the repo the bot would index for
+    them (:func:`parse_repo_url`). Anything else uses the README comparison
+    form (:func:`_canonical_url`) so intake and commit-time dedup agree.
+    """
+    parsed = parse_repo_url(url)
+    if parsed is not None:
+        return f"{_GITHUB_HOST}/{parsed[0].lower()}/{parsed[1].lower()}"
+    return _canonical_url(url)
+
+
 def _one_line(value: str, field: str, limit: int) -> str:
     """Trim and reject anything that would break the single-line bullet (Security)."""
     text = (value or "").strip()

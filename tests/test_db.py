@@ -27,6 +27,7 @@ from app.db.repository import (
     get_active_resource_for_user,
     get_github_token,
     get_resource,
+    list_resources_by_states,
     record_decision,
     save_github_token,
     set_resource_state,
@@ -401,3 +402,31 @@ async def test_hostile_strings_stored_and_retrieved_verbatim(
     # Nothing was executed: every table is still present and readable.
     assert await _table_names(db) >= TABLES
     assert await get_active_resource_for_user(db, 42) is not None
+
+
+# ------------------------------------------------- duplicate-check listings
+
+async def test_list_resources_by_states_committed_first_then_newest(
+    db: aiosqlite.Connection,
+) -> None:
+    await upsert_user(db, 7, "bob")
+    a = await create_resource(db, 7, "https://a.example/1", "other")
+    b = await create_resource(db, 7, "https://a.example/2", "other")
+    c = await create_resource(db, 7, "https://a.example/3", "other")
+    d = await create_resource(db, 7, "https://a.example/4", "github")
+    e = await create_resource(db, 7, "https://a.example/5", "github")
+
+    await set_resource_state(db, a, "FAILED")
+    await set_resource_state(db, b, "CANCELLED")
+    await set_resource_state(db, c, "NEW")
+    await set_resource_state(db, d, "COMMITTED", folder="01_Recon/OSINT")
+    await set_resource_state(db, e, "AWAITING_PLACEMENT")
+
+    rows = await list_resources_by_states(db, ("NEW", "AWAITING_PLACEMENT", "COMMITTED"))
+    assert [r.id for r in rows] == [d, e, c]  # COMMITTED first, then newest
+    assert rows[0].folder == "01_Recon/OSINT"
+
+    # Unrequested states stay out; empty input never builds invalid SQL.
+    ids = {r.id for r in rows}
+    assert a not in ids and b not in ids
+    assert await list_resources_by_states(db, ()) == []

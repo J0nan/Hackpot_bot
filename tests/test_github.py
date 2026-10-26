@@ -24,6 +24,7 @@ from app.services.github import (
     ParsedEntry,
     _canonical_url,
     build_entry_line,
+    canonical_url_key,
     insert_entry,
     leaf_template,
     leaf_title_from_path,
@@ -938,3 +939,27 @@ async def test_commit_entry_duplicate_after_conflict_raises() -> None:
     with pytest.raises(DuplicateError):
         await client.commit_entry(LEAF, ENTRY, "main", "OSINT", "desc")
     assert len(recorder.requests) == 3
+
+
+# ------------------------------------------------- canonical_url_key (intake)
+
+
+def test_canonical_url_key_collapses_github_repo_variants() -> None:
+    key = canonical_url_key("https://github.com/OtherOrg/Awesome-Tool")
+    assert key == "github.com/otherorg/awesome-tool"
+    for variant in [
+        "https://github.com/otherorg/awesome-tool/",
+        "https://github.com/OtherOrg/awesome-tool.git",
+        "https://www.github.com/OtherOrg/awesome-tool/tree/main",
+        "https://github.com/otherorg/awesome-tool/issues/3?q=1",
+        "https://GitHub.com/OtherOrg/Awesome-Tool#readme",
+    ]:
+        assert canonical_url_key(variant) == key, variant
+
+
+def test_canonical_url_key_non_github_uses_compare_form() -> None:
+    assert canonical_url_key("https://Example.com/a/") == "example.com/a"
+    assert canonical_url_key("https://example.com/a") != canonical_url_key("https://example.com/b")
+    assert canonical_url_key("https://example.com/a?x=1") == "example.com/a?x=1"
+    # GitHub URLs that are not repos stay on the generic form (S3 boundary)
+    assert canonical_url_key("https://github.com/owner") == "github.com/owner"

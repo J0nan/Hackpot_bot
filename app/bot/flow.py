@@ -61,6 +61,7 @@ import httpx
 
 from app.config import Settings
 from app.bot import pending_edits
+from app.db.database import ACTIVE_STATES
 from app.db.repository import (
     audit,
     create_resource,
@@ -68,6 +69,7 @@ from app.db.repository import (
     get_active_resource_for_user,
     get_github_token,
     get_resource,
+    list_resources_by_states,
     record_decision,
     save_github_token,
     set_resource_state,
@@ -86,6 +88,7 @@ from app.services.github import (
     FetchError,
     GitHubClient,
     build_entry_line,
+    canonical_url_key,
     leaf_title_from_path,
     parse_entry_line,
     parse_repo_url,
@@ -99,6 +102,9 @@ IV_FIELDS: tuple[str, ...] = ("name", "description", "type", "cost", "platforms"
 NEEDS_ADMIN_THRESHOLD = 0.5  # S7
 
 URL_RE = re.compile(r"https?://\S+")
+# Intake duplicate gate (L12): every state except FAILED/CANCELLED can hold a
+# live or placed submission — the check is global, across all users.
+DUPLICATE_ELIGIBLE_STATES: tuple[str, ...] = ACTIVE_STATES + ("COMMITTED",)
 _TOKEN_SPLIT_RE = re.compile(r"[\s,;]+")
 _PLATFORM_UNSAFE = set("`|'\"\\[](){}")
 # L11-a: callback indices are ASCII digits only, in canonical spelling. int()
@@ -154,6 +160,11 @@ USAGE_HINT = (
 ASK_SUMMARY = (
     "Send me a short summary of what that resource is about — remember: all "
     "links must be public."
+)
+ALREADY_COMMITTED = "⚠️ That link is already on file in 📁 {folder} — nothing new was created."
+ALREADY_IN_PROGRESS = (
+    "⚠️ That link is already being processed (resource #{resource_id}{folder_part}). "
+    "It has not been committed yet — try again once it finishes."
 )
 ANALYZING = "🤔 Analyzing… send /cancel anytime"  # L7-4: shown before the slow call
 DECISION_FAILED_USER = (
@@ -580,6 +591,9 @@ class ResourceFlow:
             await self._log("url_rejected", user_id, detail=str(exc))
             return FlowResult((str(exc), USAGE_HINT))
         kind = "github" if parse_repo_url(url) else "other"
+        duplicate = await self._find_duplicate(url)
+        if duplicate is not None:
+            return await self._duplicate_result(user_id, duplicate)
         stored = await get_github_token(self.deps.conn, user_id)
         if stored is None:
             resource_id = await create_resource(self.deps.conn, user_id, url, kind)
@@ -607,6 +621,29 @@ class ResourceFlow:
         _transition(resource_id, resource.state, "NEED_SUMMARY")
         await self._log("summary_requested", user_id, resource_id)
         return FlowResult((ASK_SUMMARY,))
+
+    async def _find_duplicate(self, url: str) -> Any:
+        """Global intake gate: canonical match against live or committed rows.
+
+        FAILED/CANCELLED submissions are excluded, so dead rows stay
+        re-submittable; list_resources_by_states orders COMMITTED first, so a
+        placed match always wins over an in-flight one.
+        """
+        key = canonical_url_key(url)
+        rows = await list_resources_by_states(self.deps.conn, DUPLICATE_ELIGIBLE_STATES)
+        return next((r for r in rows if canonical_url_key(r.url) == key), None)
+
+    async def _duplicate_result(self, user_id: int, match: Any) -> FlowResult:
+        await self._log("duplicate_link", user_id, match.id, detail=f"state={match.state}")
+        if match.state == "COMMITTED":
+            replies = [ALREADY_COMMITTED.format(folder=match.folder or "the target repo")]
+            if match.commit_url:
+                replies.append(f"See {match.commit_url}.")
+            return FlowResult(tuple(replies))
+        folder_part = f", folder {match.folder}" if match.folder else ""
+        return FlowResult(
+            (ALREADY_IN_PROGRESS.format(resource_id=match.id, folder_part=folder_part),)
+        )
 
     async def _fetch_and_decide(
         self, user_id: int, resource: Any, token: str, progress: ProgressSink | None = None

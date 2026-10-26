@@ -1154,3 +1154,118 @@ async def test_handler_deletes_nothing_on_rejected_edit(h: dict) -> None:
     assert paste.answers[-1] == "<pre>`type:tool` `free` `linux`</pre>"
     assert paste.parse_modes[-1] == "HTML"  # renders as a copyable code block
     assert len(paste.answers) == 3  # exactly one error, then the re-offered prompt
+
+
+# ------------------------------------------------- intake duplicate gate (L12)
+
+
+SECOND_USER = 555  # someone else's submission: the check is global
+COMMIT_URL = "https://github.com/J0nan/Hackpot/commit/deadbeef"
+OTHER_URL = "https://cool-labs.io/tool"
+
+
+async def _count_resources(h: dict) -> int:
+    async with h["conn"].execute("SELECT COUNT(*) AS n FROM resources") as cursor:
+        row = await cursor.fetchone()
+    return int(row["n"])
+
+
+async def _seed(h: dict, url: str, kind: str, state: str, folder: str = "") -> int:
+    """Another user's resource in *state*; committed rows carry the commit link."""
+    conn = h["conn"]
+    await upsert_user(conn, SECOND_USER, "someone-else")
+    rid = await create_resource(conn, SECOND_USER, url, kind)
+    updates: dict[str, str] = {"folder": folder}
+    if state == "COMMITTED":
+        updates["commit_url"] = COMMIT_URL
+    await set_resource_state(conn, rid, state, **updates)
+    return rid
+
+
+async def test_committed_duplicate_names_folder_and_skips_decision(h: dict) -> None:
+    """The gate fires before create_resource and before the decision model."""
+    flow = h["flow"]
+    await _capture_token(h)
+    await _seed(h, GITHUB_URL, "github", "COMMITTED", folder=CHOSEN)
+    before = await _count_resources(h)
+
+    result = await flow.handle_text(USER, "jonan", GITHUB_URL)
+
+    assert any(CHOSEN in text for text in result.replies)
+    assert any(COMMIT_URL in text for text in result.replies)
+    assert h["decision"].calls == []
+    assert await _count_resources(h) == before  # no new row
+    rows = await _audit(h, "duplicate_link")
+    assert len(rows) == 1
+
+
+async def test_committed_duplicate_detected_across_github_url_variants(h: dict) -> None:
+    """Case, trailing slash, .git, /tree/… and www all collapse to one repo."""
+    flow = h["flow"]
+    await _capture_token(h)
+    await _seed(h, GITHUB_URL, "github", "COMMITTED", folder=CHOSEN)
+    variants = [
+        "https://github.com/OtherOrg/awesome-tool/",
+        "https://github.com/otherorg/Awesome-Tool",
+        "https://github.com/OtherOrg/awesome-tool.git",
+        "https://github.com/OtherOrg/awesome-tool/tree/main",
+        "https://www.github.com/otherorg/awesome-tool/issues/3",
+    ]
+    for variant in variants:
+        result = await flow.handle_text(USER, "jonan", variant)
+        assert any(CHOSEN in text for text in result.replies), variant
+    assert h["decision"].calls == []
+
+
+async def test_in_progress_duplicate_is_reported_as_pending(h: dict) -> None:
+    """No PAT needed for the gate to fire, and pending rows are named honestly."""
+    flow = h["flow"]
+    rid = await _seed(h, GITHUB_URL, "github", "NEED_SUMMARY")
+    placed = await _seed(h, OTHER_URL, "other", "AWAITING_ENTRY_INFO", folder=FOLDERS[0])
+    before = await _count_resources(h)
+
+    result = await flow.handle_text(USER, "jonan", GITHUB_URL)
+    assert await _count_resources(h) == before
+    assert h["decision"].calls == []
+    assert "already being processed" in result.replies[0].lower()
+    assert str(rid) in result.replies[0]
+
+    result = await flow.handle_text(USER, "jonan", OTHER_URL)
+    assert FOLDERS[0] in result.replies[0]  # folder shown when one was already chosen
+
+
+@pytest.mark.parametrize("state", ["CANCELLED", "FAILED"])
+async def test_dead_submissions_stay_resubmittable(h: dict, state: str) -> None:
+    flow = h["flow"]
+    await _capture_token(h)
+    await _seed(h, GITHUB_URL, "github", state)
+    before = await _count_resources(h)
+
+    await flow.handle_text(USER, "jonan", GITHUB_URL)
+
+    assert await _count_resources(h) == before + 1  # normal intake proceeded
+    assert len(h["decision"].calls) == 1
+
+
+async def test_non_github_duplicate_matches_canonical_form(h: dict) -> None:
+    flow = h["flow"]
+    await _seed(h, "https://example.com/tool", "other", "COMMITTED", folder=FOLDERS[0])
+    before = await _count_resources(h)
+
+    result = await flow.handle_text(USER, "jonan", "https://example.com/tool/")
+
+    assert any(FOLDERS[0] in text for text in result.replies)
+    assert h["decision"].calls == []
+    assert await _count_resources(h) == before
+
+
+async def test_distinct_link_is_not_a_duplicate(h: dict) -> None:
+    """PRESERVE: everything that is not a repeat keeps the old intake behavior."""
+    flow = h["flow"]
+    await _capture_token(h)
+    await _seed(h, GITHUB_URL, "github", "COMMITTED", folder=CHOSEN)
+
+    result = await flow.handle_text(USER, "jonan", "https://github.com/OtherOrg/different-repo")
+
+    assert isinstance(result.keyboard, CandidatesKB)
+    assert len(h["decision"].calls) == 1

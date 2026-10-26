@@ -38,6 +38,9 @@ HELP_TEXT = (
     "answer the entry questions, and confirm the commit — made under your own "
     "account, to the configured branch.\n"
     "\n"
+    "If a link is already on file I say so — with the folder it lives in — "
+    "before doing anything else.\n"
+    "\n"
     "Remember: all repos and resources must be public."
 )
 

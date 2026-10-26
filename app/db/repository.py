@@ -167,6 +167,26 @@ async def get_active_resource_for_user(
     return Resource.from_row(row) if row is not None else None
 
 
+async def list_resources_by_states(
+    conn: aiosqlite.Connection, states: tuple[str, ...]
+) -> list[Resource]:
+    """Every resource whose state is in *states*, across all users.
+
+    Order: COMMITTED first, then newest (created_at, id). Duplicate checks
+    rely on it to prefer a placed, committed match over an in-flight one.
+    """
+    if not states:
+        return []
+    placeholders = ", ".join("?" for _ in states)
+    async with conn.execute(
+        f"SELECT * FROM resources WHERE state IN ({placeholders}) "
+        "ORDER BY state = 'COMMITTED' DESC, created_at DESC, id DESC",
+        states,
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return [Resource.from_row(row) for row in rows]
+
+
 async def record_decision(
     conn: aiosqlite.Connection, resource_id: int, **fields: Any
 ) -> int:
