@@ -69,7 +69,7 @@ async def _send(message: Message, deps: AppDeps, result: FlowResult) -> None:
     """Reply each text; the keyboard rides on the final reply.
 
     ``result.parse_mode`` is forwarded verbatim (normally None == bot default);
-    the flow pre-escapes anything it marks as HTML (T2, S4.2).
+    the flow pre-escapes anything it marks as HTML (T4, S6.2).
     """
     last = len(result.replies) - 1
     for index, text in enumerate(result.replies):
@@ -80,6 +80,14 @@ async def _send(message: Message, deps: AppDeps, result: FlowResult) -> None:
             await message.delete()
         except TelegramAPIError:
             pass  # deletion is best-effort; capture already happened
+    for chat_id, message_id in result.delete_outgoing:
+        # T4/S6.3: delete the previous confirmation card. The ids were captured
+        # from the user's own button press (never caller-supplied), and this is
+        # best-effort with the same swallow pattern (S6.5).
+        try:
+            await message.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except TelegramAPIError:
+            pass
 
 
 async def _guard_message(
@@ -168,9 +176,16 @@ async def on_callback(callback: CallbackQuery, deps: AppDeps, flow: ResourceFlow
         await audit(deps.conn, "rate_limited", tg_user_id=user_id)
         return
 
-    result = await flow.handle_callback(user_id, username, callback.data or "")
+    card = callback.message
+    # T4/S6.2: the card ids come from the Telegram callback object itself; the
+    # flow only ever deletes what it captured from the user's own press.
+    chat_id = getattr(getattr(card, "chat", None), "id", None)
+    message_id = getattr(card, "message_id", None)
+    result = await flow.handle_callback(
+        user_id, username, callback.data or "", chat_id=chat_id, message_id=message_id
+    )
     if result.new_message and result.replies and callback.message is not None:
-        # T2/S4.2: answer as fresh messages and leave the button bubble (and its
+        # T4/S6.2: answer as fresh messages and leave the button bubble (and its
         # ✅/❌ keyboard) untouched.
         last = len(result.replies) - 1
         for index, text in enumerate(result.replies):

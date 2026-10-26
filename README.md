@@ -248,9 +248,11 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
  preview of the exact bullet ──✅ Commit / ❌ Cancel──▶ GET leaf README sha → insert
                                                         alphabetically → PUT Contents API
         ▲
-        └── ✏️ Edit → the bullet comes back as a copyable code block; paste it back
-            edited (the reviewed link stays locked, the entry format is re-applied)
-            → the confirmation is re-sent, and ✅ commits the edited bullet
+        └── ✏️ Description / 🏷️ Tags → the current description (or the current tag
+            line) comes back as a copyable code block; send the new value back
+            and the bot re-applies the entry format (name and reviewed link
+            untouched), re-sends the confirmation, deletes the previous card,
+            and ✅ commits the edited bullet
         │
         ▼
  commit URL + audit rows in SQLite (resumes where it stopped after a restart)
@@ -271,12 +273,19 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
   matters), `type`, `cost`, optional platform tags. `none` skips platforms.
 - **Confirm** — the preview shows the exact bullet; ✅ commits to `TARGET_BRANCH`, ❌ or
   `/cancel` drops the resource without touching the repo.
-- **✏️ Edit before committing** — the confirmation carries a third button, ✏️ Edit: it
-  sends the bullet as a copyable code block. Modify the name, description or tags (the
-  reviewed link stays locked), send the line back, and the bot re-applies the entry
-  format and re-sends the confirmation — ✅ then commits the edited bullet. Rejected
-  pastes answer one specific error plus the copyable bullet, edits can repeat any
-  number of times, and ✅/❌ stay available throughout.
+- **Edit one field before committing** — the confirmation carries two extra buttons
+  on one row. **✏️ Description** sends the current description as a copyable code
+  block: modify it (one line, no `[ ]` or backticks, at most 500 characters) and
+  send it back. **🏷️ Tags** sends the current tag line: edit it on one line (the
+  first tag stays a `type:` tag, cost optional, platform tags follow the normal
+  tag rules) and send it back. Either way the bot keeps the name and the reviewed
+  link byte-identical, re-applies the entry format, re-sends the confirmation and
+  **deletes the previous confirmation message** — ✅ then commits the edited
+  bullet. Rejected pastes answer one specific error plus the re-offered prompt,
+  nothing is stored, edits can repeat any number of times, and ✅/❌ stay
+  available throughout. The marker for a pending paste-back is process-local:
+  after a bot restart, plain text in the confirm step just re-shows the button
+  hint.
 - **`/forget`** deletes your stored token (rotate a revoked PAT this way), then `/start`
   to save the new one. **`/help`** prints the command list; **`/cancel`** aborts the
   current resource at any step.

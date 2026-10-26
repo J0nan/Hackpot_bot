@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app.bot import handlers
+from app.bot import handlers, pending_edits
 from app.bot.flow import (ASK_COST, INVALID_FIELD, UNKNOWN_FOLDER,
                           AppDeps, ResourceFlow, make_github_factory)
 from app.config import Settings
@@ -98,6 +98,14 @@ async def _audit(conn):
         return [tuple(r) for r in await cur.fetchall()]
 
 
+@pytest.fixture(autouse=True)
+def _no_stale_edit_markers():
+    """T4 markers are process-global; tmp DBs reuse resource ids across tests."""
+    pending_edits.clear_all()
+    yield
+    pending_edits.clear_all()
+
+
 async def test_unauthorized_text_is_silent_and_audited(env):  # S9/S17
     deps, flow = env
     m = FakeMessage(EVIL_ID, "intruder", "https://github.com/evil/repo")
@@ -116,40 +124,42 @@ async def test_unauthorized_callback_is_silent_and_audited(env):  # S9/S17
     assert any(r[1] == "unauthorized_ignored" and r[0] == EVIL_ID for r in await _audit(deps.conn))
 
 
-async def test_unauthorized_sender_pressing_edit_stays_silent(env):  # S9/S17 (T2)
-    """The ✏️ Edit button obeys the same gate as ✅/❌: silent, audited."""
+async def test_unauthorized_sender_pressing_field_edit_stays_silent(env):  # S9/S17 (T4)
+    """The ✏️ Description / 🏷️ Tags buttons obey the same gate as ✅/❌: silent."""
     deps, flow = env
-    c = FakeCallback(EVIL_ID, "intruder", "e")
-    await handlers.on_callback(c, deps, flow)
-    assert c.message.edit_text.items == [] and c.message.answer.items == []
-    assert c.answer.items == [((), {})]  # empty ack, nothing shown
-    assert any(r[1] == "unauthorized_ignored" and r[0] == EVIL_ID for r in await _audit(deps.conn))
+    for data in ("d", "t"):
+        c = FakeCallback(EVIL_ID, "intruder", data)
+        await handlers.on_callback(c, deps, flow)
+        assert c.message.edit_text.items == [] and c.message.answer.items == []
+        assert c.answer.items == [((), {})]  # empty ack, nothing shown
+    rows = [r for r in await _audit(deps.conn) if r[1] == "unauthorized_ignored"]
+    assert len(rows) == 2 and all(r[0] == EVIL_ID for r in rows)
 
 
-async def test_edit_callback_answers_as_new_message_and_keeps_bubble(env):  # T2 S4.2
+async def test_field_edit_callback_answers_as_new_message_and_keeps_bubble(env):  # T4 S6.2
     """The edit reply must NOT edit_text the ✅/❌ bubble it lives on."""
     deps, flow = env
     await upsert_user(deps.conn, UID, UNAME)
     r = await create_resource(deps.conn, UID, "https://example.com/x", "other")
     await set_resource_state(deps.conn, r, "CONFIRMING", folder=LEAF,
                              context="c", entry_line=BULLET)
-    c = FakeCallback(UID, UNAME, "e")
+    c = FakeCallback(UID, UNAME, "d")
     await handlers.on_callback(c, deps, flow)
 
     assert c.message.edit_text.items == []  # confirmation bubble untouched
     assert len(c.message.answer.items) == 2  # instruction, then the code block
     (text_args, _), (code_args, code_kwargs) = c.message.answer.items
-    assert "copy" in text_args[0].lower()
-    assert code_args[0] == f"<pre>{BULLET}</pre>"
+    assert "description" in text_args[0].lower()
+    assert code_args[0] == "<pre>d</pre>"  # the CURRENT description, not the whole bullet
     assert code_kwargs.get("parse_mode") == "HTML"
     assert code_kwargs.get("reply_markup") is None  # keyboard never leaves the bubble
     assert len(c.answer.items) == 1  # callback acknowledged
     assert (await get_resource(deps.conn, r)).entry_line == BULLET  # nothing persisted
 
 
-async def test_edited_bullet_commits_only_to_validated_folder(env):  # T2 S3/S16
-    """Edit-then-confirm: the wire still shows exactly one validated leaf path,
-    and the committed content is the edited bullet."""
+async def test_edited_bullet_commits_only_to_validated_folder(env):  # T4 S4.5/S16
+    """Description-edit-then-confirm: the wire still shows exactly one validated
+    leaf path, and the committed content is the edited bullet."""
     deps, flow = env
     seen = []
 
@@ -170,8 +180,9 @@ async def test_edited_bullet_commits_only_to_validated_folder(env):  # T2 S3/S16
     await set_resource_state(deps.conn, r, "CONFIRMING", folder=LEAF,
                              context="c", entry_line=BULLET)
 
+    await flow.handle_callback(UID, UNAME, "d")  # ✏️ Description press
+    await flow.handle_text(UID, UNAME, "Sharpened description")  # the paste-back
     edited = "- [X](https://example.com/x) — Sharpened description. `type:tool` `free`"
-    await flow.handle_text(UID, UNAME, edited)
     assert (await get_resource(deps.conn, r)).entry_line == edited
 
     await ResourceFlow(deps).handle_confirm(UID)

@@ -20,9 +20,10 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
-from app.bot import handlers
+from app.bot import handlers, pending_edits
 from app.bot.flow import (
     AppDeps,
+    CONFIRMING_HINT,
     CandidatesKB,
     ConfirmKB,
     CostKB,
@@ -180,6 +181,14 @@ async def h(tmp_path: Path) -> AsyncIterator[dict[str, Any]]:
     finally:
         await http.aclose()
         await conn.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_stale_edit_markers() -> AsyncIterator[None]:
+    """Markers are process-global and tmp DBs reuse resource ids across tests."""
+    pending_edits.clear_all()
+    yield
+    pending_edits.clear_all()
 
 
 async def _audit(h: dict, action: str) -> list[dict[str, Any]]:
@@ -627,179 +636,255 @@ async def test_confirm_without_pat_asks_for_token(h: dict) -> None:
     assert (await get_active_resource_for_user(h["conn"], USER)).state == "CONFIRMING"
 
 
-# ------------------------------------------------------- ✏️ bullet edit (T2)
+# ------------------------------------------------------- field edits (T4)
+
+CHAT_ID = 77001
+CARD_MSG_ID = 90042
 
 
-CONFIRMED_URL = GITHUB_URL  # the reviewed link the URL lock keeps
+def _current_bullet(
+    desc: str = "A tool for things", tags: str = "`type:tool` `free` `linux`"
+) -> str:
+    return f"- [awesome-tool]({GITHUB_URL}) — {desc}. {tags}"
 
 
-def _edited_bullet(desc: str, tags: str = "`type:tool` `free` `linux`") -> str:
-    return f"- [awesome-tool]({CONFIRMED_URL}) — {desc}. {tags}"
-
-
-async def test_edit_button_in_confirming_replies_copyable_bullet(h: dict) -> None:
-    """S1/S4.2: ✏️ Edit answers with a rendered code block of the current bullet."""
+async def test_description_press_replies_current_description_in_code_block(h: dict) -> None:
+    """S6.2/S6.3: "d" answers with the CURRENT description as a copyable block."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
-    stored = (await get_resource(h["conn"], rid)).entry_line
 
-    result = await flow.handle_callback(USER, "jonan", "e")
+    result = await flow.handle_callback(
+        USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID
+    )
 
     assert len(result.replies) == 2
-    assert "copy" in result.replies[0].lower()  # short instruction
-    assert result.replies[1] == f"<pre>{stored}</pre>"  # copy-friendly block, verbatim
-    assert result.keyboard is None  # the ✅/❌ bubble must stay usable
-    assert result.new_message is True
-    assert result.parse_mode == "HTML"
-
-    resource = await get_resource(h["conn"], rid)
-    assert resource.state == "CONFIRMING" and resource.entry_line == stored  # nothing changed
-    assert await _audit(h, "entry_edit_requested")
-
-
-async def test_edit_callback_outside_confirming_is_unknown(h: dict) -> None:
-    """S4.6: "e" is only a CONFIRMING action; elsewhere it is the audited unknown."""
-    flow = await _to_placement(h)
-    result = await flow.handle_callback(USER, "jonan", "e")
-    assert result.replies == (UNKNOWN_CALLBACK,)
+    assert "copy" in result.replies[0].lower() and "description" in result.replies[0].lower()
+    assert result.replies[1] == "<pre>A tool for things</pre>"
+    assert result.new_message is True and result.parse_mode == "HTML"
     assert result.keyboard is None
-    rows = await _audit(h, "callback_ignored")
-    assert rows and rows[-1]["detail"] == "data=e"
+    assert result.delete_outgoing == ()
+    resource = await get_resource(h["conn"], rid)
+    assert resource.state == "CONFIRMING" and resource.entry_line == _current_bullet()
+    assert await _audit(h, "entry_edit_requested")
+    marker = pending_edits.get_marker(rid)
+    assert marker is not None and marker.mode == "description"
+    assert (marker.chat_id, marker.message_id) == (CHAT_ID, CARD_MSG_ID)
 
-    await flow.handle_folder_choice(USER, CHOSEN)  # AWAITING_ENTRY_INFO
-    result = await flow.handle_callback(USER, "jonan", "e")
-    assert result.replies == (UNKNOWN_CALLBACK,)
-    assert (await get_active_resource_for_user(h["conn"], USER)).state == "AWAITING_ENTRY_INFO"
 
-
-async def test_paste_edited_bullet_persists_and_resends_confirmation(h: dict) -> None:
-    """S2/S4.3: a valid paste rebuilds via build_entry_line, persists, re-previews."""
+async def test_tags_press_replies_current_tags_and_replaces_the_marker(h: dict) -> None:
+    """S6.2: "t" shows the current tag line; another field press replaces it."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
-    edited = _edited_bullet("A superb recon tool", "`type:tool` `free` `linux` `windows`")
+    await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
 
-    result = await flow.handle_text(USER, "jonan", edited)
+    result = await flow.handle_callback(
+        USER, "jonan", "t", chat_id=CHAT_ID, message_id=CARD_MSG_ID + 7
+    )
 
+    assert result.replies[1] == "<pre>`type:tool` `free` `linux`</pre>"
+    assert "tags" in result.replies[0].lower()
+    marker = pending_edits.get_marker(rid)
+    assert marker is not None and marker.mode == "tags"
+    assert (marker.chat_id, marker.message_id) == (CHAT_ID, CARD_MSG_ID + 7)
+
+
+async def test_field_presses_outside_confirming_are_unknown_callbacks(h: dict) -> None:
+    """S6.2: "d"/"t" are only CONFIRMING actions; elsewhere the audited unknown tail."""
+    flow = await _to_placement(h)
+    for data in ("d", "t"):
+        result = await flow.handle_callback(USER, "jonan", data)
+        assert result.replies == (UNKNOWN_CALLBACK,), data
+        assert result.keyboard is None, data
+    rows = await _audit(h, "callback_ignored")
+    assert rows[-1]["detail"] == "data=t"
+
+
+async def test_removed_bullet_edit_payload_is_unknown_in_confirming(h: dict) -> None:
+    """S6.1/S6.7: the whole-bullet "e" payload is gone → audit + UNKNOWN_CALLBACK."""
+    flow, _ = await _to_confirming(h)
+    result = await flow.handle_callback(
+        USER, "jonan", "e", chat_id=CHAT_ID, message_id=CARD_MSG_ID
+    )
+    assert result.replies == (UNKNOWN_CALLBACK,)
+    assert pending_edits.get_marker(await _active_id(h)) is None
+
+
+async def test_confirming_text_without_marker_falls_back_to_hint(h: dict) -> None:
+    """S6.5: the whole-bullet paste interception is removed; plain text only hints."""
+    flow, _ = await _to_confirming(h)
+    result = await flow.handle_text(USER, "jonan", _current_bullet("Rewritten by hand"))
+    assert result.replies == (CONFIRMING_HINT,)
+    assert result.keyboard is None
+    resource = await get_resource(h["conn"], await _active_id(h))
+    assert resource.entry_line == _current_bullet()  # never applied
+
+
+async def test_description_paste_rebuilds_bullet_keeping_name_url_tags(h: dict) -> None:
+    """S6.3: same name, reviewed url, same tags — only the description changes."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
+
+    result = await flow.handle_text(USER, "jonan", "A superb recon tool")
+
+    expected = _current_bullet("A superb recon tool")
     resource = await get_resource(h["conn"], rid)
-    assert resource.state == "CONFIRMING"
-    assert resource.entry_line == edited
-    assert result.replies == (f"{PREVIEW}\n{edited}",)  # confirmation exactly as before
+    assert resource.state == "CONFIRMING" and resource.entry_line == expected
+    assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert isinstance(result.keyboard, ConfirmKB) and result.keyboard.folder == CHOSEN
-    assert result.parse_mode is None
+    assert result.parse_mode is None and result.new_message is False
+    assert result.delete_outgoing == ((CHAT_ID, CARD_MSG_ID),)  # S6.3 previous card
+    assert pending_edits.get_marker(rid) is None
     assert await _audit(h, "entry_edited")
 
 
-async def test_paste_with_equivalent_url_rebuilds_on_the_reviewed_link(h: dict) -> None:
-    """S3: the lock is _canonical_url-based; the rebuild keeps the stored raw URL."""
+async def test_tags_paste_rebuilds_keeping_name_url_description(h: dict) -> None:
+    """S6.4: same name, url and description — only the tags change."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
-    paste = f"- [awesome-tool]({CONFIRMED_URL}/) — Sharper summary. `type:tool` `free` `linux`"
+    await flow.handle_callback(USER, "jonan", "t", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
 
-    result = await flow.handle_text(USER, "jonan", paste)
+    result = await flow.handle_text(USER, "jonan", "`type:docs` `paid` `windows` `macos`")
 
-    expected = _edited_bullet("Sharper summary")
+    expected = _current_bullet(tags="`type:docs` `paid` `windows` `macos`")
     assert (await get_resource(h["conn"], rid)).entry_line == expected
     assert result.replies == (f"{PREVIEW}\n{expected}",)
-    assert isinstance(result.keyboard, ConfirmKB)
+    assert result.delete_outgoing == ((CHAT_ID, CARD_MSG_ID),)
+    assert await _audit(h, "entry_edited")
 
 
-async def test_paste_changed_url_is_rejected_and_retryable(h: dict) -> None:
-    """S3/S4.4: a different link is refused with one clear error + the copyable bullet."""
+DESCRIPTION_REJECTIONS: list[tuple[str, str]] = [
+    ("bad [bracket] name", "can't contain"),
+    ("evil `ticks` here", "backticks"),
+    ("first line\nsecond line", "one line"),
+    ("d" * 501, "500"),
+    ("   ", "empty"),
+]
+
+TAGS_REJECTIONS: list[tuple[str, str]] = [
+    ("free linux", "Missing type tag"),
+    ("type:banana free", "type tag must be one of"),
+    ("type:tool cost:premium linux", "cost"),
+    ("type:tool `ba|d`", "invalid platform tag"),
+    ("type:tool " + "t" * 41, "40 character limit"),
+]
+
+
+@pytest.mark.parametrize("paste,needle", DESCRIPTION_REJECTIONS)
+async def test_description_rejections_answer_one_error_and_persist_nothing(
+    h: dict, paste: str, needle: str
+) -> None:
+    """S6.3/S6.6: one specific error, prompt re-offered, row unchanged, marker kept."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
-    stored = (await get_resource(h["conn"], rid)).entry_line
-    paste = "- [awesome-tool](https://github.com/EvilOrg/awesome-tool) — A tool for things. `type:tool` `free` `linux`"
+    await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
 
     result = await flow.handle_text(USER, "jonan", paste)
 
-    assert len(result.replies) == 2
-    assert "url" in result.replies[0].lower() or "link" in result.replies[0].lower()
-    assert result.replies[1] == f"<pre>{stored}</pre>"  # retry affordance, unchanged bullet
-    assert result.keyboard is None
-    assert result.parse_mode == "HTML"
+    assert len(result.replies) == 3  # error, instruction, copyable current value
+    assert needle in result.replies[0], result.replies[0]
+    assert result.replies[-1] == "<pre>A tool for things</pre>"
+    assert result.keyboard is None and result.delete_outgoing == ()
     resource = await get_resource(h["conn"], rid)
-    assert resource.state == "CONFIRMING" and resource.entry_line == stored  # nothing persisted
+    assert resource.state == "CONFIRMING" and resource.entry_line == _current_bullet()
+    assert pending_edits.get_marker(rid) is not None  # retry stays open
     assert await _audit(h, "entry_edit_rejected")
 
 
-async def test_paste_garbage_replies_specific_error_and_retry_bullet(h: dict) -> None:
-    """S4.4: unparseable input names the single problem; state and bullet untouched."""
+@pytest.mark.parametrize("paste,needle", TAGS_REJECTIONS)
+async def test_tags_rejections_answer_one_error_and_persist_nothing(
+    h: dict, paste: str, needle: str
+) -> None:
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
-    stored = (await get_resource(h["conn"], rid)).entry_line
+    await flow.handle_callback(USER, "jonan", "t", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
 
-    result = await flow.handle_text(USER, "jonan", "just prose, not a bullet")
+    result = await flow.handle_text(USER, "jonan", paste)
 
-    assert "missing leading dash" in result.replies[0].lower()
-    assert result.replies[1] == f"<pre>{stored}</pre>"
+    assert len(result.replies) == 3
+    assert needle in result.replies[0], result.replies[0]
+    assert result.replies[-1] == "<pre>`type:tool` `free` `linux`</pre>"
+    assert result.delete_outgoing == ()
     resource = await get_resource(h["conn"], rid)
-    assert resource.state == "CONFIRMING" and resource.entry_line == stored
+    assert resource.state == "CONFIRMING" and resource.entry_line == _current_bullet()
+    assert pending_edits.get_marker(rid) is not None
+    assert await _audit(h, "entry_edit_rejected")
 
-    # Uppercase scheme stays rejected (deliberate pre-existing rule, L5) — format
-    # error, not the URL-lock error.
-    result = await flow.handle_text(
-        USER, "jonan", f"- [awesome-tool](HTTPS://github.com/OtherOrg/awesome-tool) — d. `type:tool`"
+
+async def test_tags_paste_duplicate_tags_are_deduped_by_the_existing_rule(h: dict) -> None:
+    """S6.4: duplicates stay a dedupe (existing tag rules), never a crash."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    await flow.handle_callback(USER, "jonan", "t", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
+
+    result = await flow.handle_text(USER, "jonan", "type:tool free linux linux")
+
+    assert (await get_resource(h["conn"], rid)).entry_line == _current_bullet()
+    assert result.replies == (f"{PREVIEW}\n{_current_bullet()}",)
+    assert result.delete_outgoing == ((CHAT_ID, CARD_MSG_ID),)
+    assert pending_edits.get_marker(rid) is None
+
+
+async def test_paste_routes_per_marker_not_per_content(h: dict) -> None:
+    """The marker decides the field: a tag-shaped line edits the DESCRIPTION."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
+
+    result = await flow.handle_text(USER, "jonan", "type:docs paid windows")
+
+    assert (await get_resource(h["conn"], rid)).entry_line == _current_bullet(
+        desc="type:docs paid windows"
     )
-    assert "https://" in result.replies[0].lower() or "url" in result.replies[0].lower()
-    assert (await get_resource(h["conn"], rid)).entry_line == stored
+    assert isinstance(result.keyboard, ConfirmKB)
 
 
-async def test_paste_tagless_bullet_rejected_not_crashed(h: dict) -> None:
-    """L5: a tagless paste parses but cannot be rebuilt → the S4.4 error, never a crash."""
+async def test_description_then_tags_then_confirm_commits_edited_bullet(h: dict) -> None:
+    """S4.5/S6.6: edits loop freely; ✅ commits the last entry_line verbatim."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
-    stored = (await get_resource(h["conn"], rid)).entry_line
-    paste = f"- [awesome-tool]({CONFIRMED_URL}) — A tool for things."
+    await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
+    await flow.handle_text(USER, "jonan", "Edited description")
+    await flow.handle_callback(USER, "jonan", "t", chat_id=CHAT_ID, message_id=CARD_MSG_ID + 1)
+    await flow.handle_text(USER, "jonan", "type:lab paid docker")
 
-    result = await flow.handle_text(USER, "jonan", paste)
-
-    assert "type tag" in result.replies[0].lower()
-    assert result.replies[1] == f"<pre>{stored}</pre>"
-    resource = await get_resource(h["conn"], rid)
-    assert resource.state == "CONFIRMING" and resource.entry_line == stored
-
-
-async def test_paste_over_name_cap_rejected_with_retry_bullet(h: dict) -> None:
-    """S4.4: over-cap fields are refused by the shared builder caps, retry stays open."""
-    flow, _ = await _to_confirming(h)
-    rid = await _active_id(h)
-    stored = (await get_resource(h["conn"], rid)).entry_line
-    paste = _edited_bullet("A tool for things").replace("[awesome-tool]", f"[{'n' * 121}]")
-
-    result = await flow.handle_text(USER, "jonan", paste)
-
-    assert "120" in result.replies[0] and "limit" in result.replies[0].lower()
-    assert result.replies[1] == f"<pre>{stored}</pre>"
-    assert (await get_resource(h["conn"], rid)).entry_line == stored
-
-
-async def test_edit_then_confirm_commits_the_edited_bullet(h: dict) -> None:
-    """S4.5: ✅ must commit the edited entry_line verbatim, not the original preview."""
-    flow, _ = await _to_confirming(h)
-    edited = _edited_bullet("A superb recon tool")
-    await flow.handle_text(USER, "jonan", edited)
+    expected = _current_bullet("Edited description", tags="`type:lab` `paid` `docker`")
+    assert (await get_resource(h["conn"], rid)).entry_line == expected
 
     await flow.handle_confirm(USER)
-
     commit_call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]
     assert commit_call[1] == f"{CHOSEN}/README.md"
-    assert commit_call[2] == edited  # verbatim, exactly what the paste persisted
+    assert commit_call[2] == expected  # verbatim (S4.5)
+    assert pending_edits.get_marker(rid) is None  # ✅ ends the edit loop (S6.2)
 
 
-async def test_repeated_edits_each_persist_and_the_last_one_wins(h: dict) -> None:
-    """S4.4: editing may repeat any number of times; ✅ commits the latest bullet."""
+async def test_marker_cleared_after_cancel(h: dict) -> None:
+    """S6.2: ❌ / /cancel clear the pending-edit marker."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
-    first, second = _edited_bullet("First rewrite"), _edited_bullet("Second rewrite")
+    await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
+    await flow.handle_cancel(USER)
+    assert pending_edits.get_marker(rid) is None
 
-    await flow.handle_text(USER, "jonan", first)
-    assert (await get_resource(h["conn"], rid)).entry_line == first
-    await flow.handle_text(USER, "jonan", second)
-    assert (await get_resource(h["conn"], rid)).entry_line == second
 
-    await flow.handle_confirm(USER)
-    commit_call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]
-    assert commit_call[2] == second
+async def test_description_edit_preserves_unicode_and_em_dash_name(h: dict) -> None:
+    """Name/description round-trip is byte-faithful across unicode and '—' in the name."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    bullet = (
+        "- [Ñom — Special](https://github.com/OtherOrg/awesome-tool) — "
+        "Descripción con ñ. `type:tool` `free`"
+    )
+    await set_resource_state(h["conn"], rid, "CONFIRMING", entry_line=bullet)
+
+    result = await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
+    assert result.replies[1] == "<pre>Descripción con ñ</pre>"
+
+    await flow.handle_text(USER, "jonan", "Nueva descripción")
+    assert (await get_resource(h["conn"], rid)).entry_line == (
+        "- [Ñom — Special](https://github.com/OtherOrg/awesome-tool) — "
+        "Nueva descripción. `type:tool` `free`"
+    )
 
 
 # ---------------------------------------------------------------- factories
@@ -960,14 +1045,39 @@ class FakeUser:
         self.username = username
 
 
+class FakeChat:
+    def __init__(self, chat_id: int) -> None:
+        self.id = chat_id
+
+
+class FakeBot:
+    """Records delete_message calls (the S6.3 previous-card deletion pin)."""
+
+    def __init__(self) -> None:
+        self.deleted: list[tuple[int, int]] = []
+
+    async def delete_message(self, chat_id: int = None, message_id: int = None) -> None:
+        self.deleted.append((chat_id, message_id))
+
+
 class FakeMessage:
     """Duck-typed aiogram Message: records the replies the handler sends."""
 
-    def __init__(self, user_id: int, username: str, text: str) -> None:
+    def __init__(
+        self,
+        user_id: int,
+        username: str,
+        text: str,
+        chat_id: int | None = None,
+        message_id: int | None = None,
+    ) -> None:
         self.from_user = FakeUser(user_id, username)
         self.text = text
         self.answers: list[str] = []
         self.parse_modes: list[object] = []
+        self.chat = FakeChat(chat_id) if chat_id is not None else None
+        self.message_id = message_id
+        self.bot = FakeBot()
 
     async def answer(self, text: str, reply_markup: Any = None, parse_mode: Any = None) -> None:
         self.answers.append(text)
@@ -975,6 +1085,28 @@ class FakeMessage:
 
     async def delete(self) -> None:
         pass
+
+
+class FakeCallback:
+    """Duck-typed CallbackQuery riding on the confirmation card message."""
+
+    def __init__(
+        self,
+        user_id: int,
+        username: str,
+        data: str,
+        chat_id: int = CHAT_ID,
+        message_id: int = CARD_MSG_ID,
+    ) -> None:
+        self.from_user = FakeUser(user_id, username)
+        self.data = data
+        self.acks: list[tuple] = []
+        self.message = FakeMessage(
+            user_id, username, "card", chat_id=chat_id, message_id=message_id
+        )
+
+    async def answer(self, *args: Any, **kwargs: Any) -> None:
+        self.acks.append((args, kwargs))
 
 
 async def test_handler_sends_the_analyzing_reply_first(h: dict) -> None:
@@ -988,15 +1120,37 @@ async def test_handler_sends_the_analyzing_reply_first(h: dict) -> None:
     assert all(mode is None for mode in message.parse_modes)
 
 
-async def test_handler_renders_retry_bullet_as_html_code_block(h: dict) -> None:
-    """The parse_mode on FlowResult reaches message.answer (T2 edit wiring)."""
+async def test_handler_text_without_marker_only_hints(h: dict) -> None:
+    """S6.5 through the renderer: CONFIRMING text with no marker = hint, bot default."""
     flow, _ = await _to_confirming(h)
-    rid = await _active_id(h)
-    stored = (await get_resource(h["conn"], rid)).entry_line
-
-    message = FakeMessage(USER, "jonan", "not a bullet at all")
+    message = FakeMessage(USER, "jonan", "A tool for things")
     await handlers.on_text(message, h["deps"], flow)
+    assert message.answers == [CONFIRMING_HINT]
+    assert message.parse_modes == [None]
 
-    assert message.answers[-1] == f"<pre>{stored}</pre>"
-    assert message.parse_modes[-1] == "HTML"  # renders as a copyable code block
-    assert len(message.answers) == 2  # exactly one error message, then the bullet block
+
+async def test_handler_deletes_previous_card_once_after_successful_edit(h: dict) -> None:
+    """S6.3: the new delete_outgoing mechanism deletes ONLY the tracked card, once."""
+    flow, _ = await _to_confirming(h)
+    cb = FakeCallback(USER, "jonan", "d")
+    await handlers.on_callback(cb, h["deps"], flow)
+    assert len(cb.message.answers) == 2  # prompt as new messages, ✅/❌ bubble intact
+    assert cb.message.bot.deleted == []  # pressing a button never deletes
+
+    paste = FakeMessage(USER, "jonan", "A superb recon tool")
+    await handlers.on_text(paste, h["deps"], flow)
+    assert paste.bot.deleted == [(CHAT_ID, CARD_MSG_ID)]  # exactly once, captured ids
+    assert paste.answers[-1].startswith(PREVIEW)  # the fresh confirmation card arrived
+
+
+async def test_handler_deletes_nothing_on_rejected_edit(h: dict) -> None:
+    """S6.6: a rejected paste re-offers the prompt (HTML) and deletes nothing."""
+    flow, _ = await _to_confirming(h)
+    cb = FakeCallback(USER, "jonan", "t")
+    await handlers.on_callback(cb, h["deps"], flow)
+    paste = FakeMessage(USER, "jonan", "free linux")
+    await handlers.on_text(paste, h["deps"], flow)
+    assert paste.bot.deleted == []
+    assert paste.answers[-1] == "<pre>`type:tool` `free` `linux`</pre>"
+    assert paste.parse_modes[-1] == "HTML"  # renders as a copyable code block
+    assert len(paste.answers) == 3  # exactly one error, then the re-offered prompt

@@ -4,9 +4,10 @@ No I/O and no flow logic: each builder turns already-validated data into an
 aiogram InlineKeyboardMarkup deterministically. Callback payloads are small
 and carry only indices into ``sorted(settings.categories)`` (``c:<i>`` /
 ``f:<i>``), list navigation (``o``, ``p:<i>``), plain allowed tags for the
-interview, ``✅`` / ``❌`` / ``✏️ Edit`` (``e``), and — never raw folder paths
-(Telegram caps callback_data at 64 bytes, and indices kill the path-injection
-surface).
+interview, ``✅`` / ``❌`` and the confirmation-row field edits
+``✏️ Description`` (``d``) / ``🏷️ Tags`` (``t``) — and — never raw folder
+paths (Telegram caps callback_data at 64 bytes, and indices kill the
+path-injection surface).
 """
 
 from __future__ import annotations
@@ -106,7 +107,8 @@ def confirm_kb(folder: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [_button(f"✅ Commit to {folder}", "✅")],
             [_button("❌ Cancel", "❌")],
-            # S4.1 (T2): ✏️ Edit — payload "e", valid only while CONFIRMING.
-            [_button("✏️ Edit", "e")],
+            # S6.1 (T4): one row, two field-edit buttons — payloads "d"/"t",
+            # valid only while CONFIRMING. The whole-bullet "e" row is removed.
+            [_button("✏️ Description", "d"), _button("🏷️ Tags", "t")],
         ]
     )
