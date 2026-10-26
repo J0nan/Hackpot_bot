@@ -264,10 +264,12 @@ async def test_github_warns_on_read_error(capsys: pytest.CaptureFixture[str]) ->
         await client.aclose()
 
     out = capsys.readouterr().out
-    # Prove it is OUR github WARNING (status + res= correlation), not httpx's log.
+    # Prove it is OUR github WARNING (status only), not httpx's log; the misleading
+    # fake-correlation token must be gone (review R2-1).
     assert "[app.services.github]" in out
     assert "WARNING" in out
-    assert "HTTP 403" in out and "res=unknown-ok" in out
+    assert "HTTP 403" in out
+    assert "res=unknown-ok" not in out
     assert FAKE_GHP not in out
 
 
