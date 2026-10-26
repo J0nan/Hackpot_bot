@@ -7,6 +7,7 @@ and mid-interview resume (S10).
 """
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -113,6 +114,75 @@ async def test_unauthorized_callback_is_silent_and_audited(env):  # S9/S17
     assert c.message.edit_text.items == [] and c.message.answer.items == []
     assert c.answer.items == [((), {})]  # empty ack, nothing shown
     assert any(r[1] == "unauthorized_ignored" and r[0] == EVIL_ID for r in await _audit(deps.conn))
+
+
+async def test_unauthorized_sender_pressing_edit_stays_silent(env):  # S9/S17 (T2)
+    """The ✏️ Edit button obeys the same gate as ✅/❌: silent, audited."""
+    deps, flow = env
+    c = FakeCallback(EVIL_ID, "intruder", "e")
+    await handlers.on_callback(c, deps, flow)
+    assert c.message.edit_text.items == [] and c.message.answer.items == []
+    assert c.answer.items == [((), {})]  # empty ack, nothing shown
+    assert any(r[1] == "unauthorized_ignored" and r[0] == EVIL_ID for r in await _audit(deps.conn))
+
+
+async def test_edit_callback_answers_as_new_message_and_keeps_bubble(env):  # T2 S4.2
+    """The edit reply must NOT edit_text the ✅/❌ bubble it lives on."""
+    deps, flow = env
+    await upsert_user(deps.conn, UID, UNAME)
+    r = await create_resource(deps.conn, UID, "https://example.com/x", "other")
+    await set_resource_state(deps.conn, r, "CONFIRMING", folder=LEAF,
+                             context="c", entry_line=BULLET)
+    c = FakeCallback(UID, UNAME, "e")
+    await handlers.on_callback(c, deps, flow)
+
+    assert c.message.edit_text.items == []  # confirmation bubble untouched
+    assert len(c.message.answer.items) == 2  # instruction, then the code block
+    (text_args, _), (code_args, code_kwargs) = c.message.answer.items
+    assert "copy" in text_args[0].lower()
+    assert code_args[0] == f"<pre>{BULLET}</pre>"
+    assert code_kwargs.get("parse_mode") == "HTML"
+    assert code_kwargs.get("reply_markup") is None  # keyboard never leaves the bubble
+    assert len(c.answer.items) == 1  # callback acknowledged
+    assert (await get_resource(deps.conn, r)).entry_line == BULLET  # nothing persisted
+
+
+async def test_edited_bullet_commits_only_to_validated_folder(env):  # T2 S3/S16
+    """Edit-then-confirm: the wire still shows exactly one validated leaf path,
+    and the committed content is the edited bullet."""
+    deps, flow = env
+    seen = []
+
+    def transport(request):
+        seen.append((request.method, str(request.url)))
+        if request.method == "PUT":
+            body = json.loads(request.content)
+            seen.append(("PUT-CONTENT", base64.b64decode(body["content"]).decode()))
+            return httpx.Response(200, json={"content": {"commit": {"html_url": "https://github.com/J0nan/Hackpot/commit/ff"}}})
+        return httpx.Response(404, json={"message": "nf"})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(transport), timeout=30.0)
+    deps.http = http
+    deps.make_github = make_github_factory(deps.settings, http)
+    await upsert_user(deps.conn, UID, UNAME)
+    await save_github_token(deps.conn, UID, encrypt_pat(deps.settings, TOKEN))
+    r = await create_resource(deps.conn, UID, "https://example.com/x", "other")
+    await set_resource_state(deps.conn, r, "CONFIRMING", folder=LEAF,
+                             context="c", entry_line=BULLET)
+
+    edited = "- [X](https://example.com/x) — Sharpened description. `type:tool` `free`"
+    await flow.handle_text(UID, UNAME, edited)
+    assert (await get_resource(deps.conn, r)).entry_line == edited
+
+    await ResourceFlow(deps).handle_confirm(UID)
+    assert (await get_resource(deps.conn, r)).state == "COMMITTED"
+    urls = [u for method, u in seen if method != "PUT-CONTENT"]
+    assert urls == [
+        f"https://api.github.com/repos/J0nan/Hackpot/contents/{LEAF}/README.md?ref=main",
+        f"https://api.github.com/repos/J0nan/Hackpot/contents/{LEAF}/README.md"]
+    committed_text = [u for method, u in seen if method == "PUT-CONTENT"][0]
+    assert edited in committed_text
+    await http.aclose()
 
 
 async def test_pat_never_stored_or_echoed_in_plaintext(env):  # S8/S12

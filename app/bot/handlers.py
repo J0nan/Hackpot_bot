@@ -66,11 +66,15 @@ def render_keyboard(deps: AppDeps, result: FlowResult) -> InlineKeyboardMarkup |
 
 
 async def _send(message: Message, deps: AppDeps, result: FlowResult) -> None:
-    """Reply each text; the keyboard rides on the final reply."""
+    """Reply each text; the keyboard rides on the final reply.
+
+    ``result.parse_mode`` is forwarded verbatim (normally None == bot default);
+    the flow pre-escapes anything it marks as HTML (T2, S4.2).
+    """
     last = len(result.replies) - 1
     for index, text in enumerate(result.replies):
         markup = render_keyboard(deps, result) if index == last else None
-        await message.answer(text, reply_markup=markup)
+        await message.answer(text, reply_markup=markup, parse_mode=result.parse_mode)
     if result.delete_message:
         try:
             await message.delete()
@@ -165,11 +169,24 @@ async def on_callback(callback: CallbackQuery, deps: AppDeps, flow: ResourceFlow
         return
 
     result = await flow.handle_callback(user_id, username, callback.data or "")
-    if result.replies and callback.message is not None:
+    if result.new_message and result.replies and callback.message is not None:
+        # T2/S4.2: answer as fresh messages and leave the button bubble (and its
+        # ✅/❌ keyboard) untouched.
+        last = len(result.replies) - 1
+        for index, text in enumerate(result.replies):
+            markup = render_keyboard(deps, result) if index == last else None
+            await callback.message.answer(
+                text, reply_markup=markup, parse_mode=result.parse_mode
+            )
+    elif result.replies and callback.message is not None:
         text = "\n\n".join(result.replies)
         markup = render_keyboard(deps, result)
         try:
-            await callback.message.edit_text(text, reply_markup=markup)
+            await callback.message.edit_text(
+                text, reply_markup=markup, parse_mode=result.parse_mode
+            )
         except TelegramAPIError:
-            await callback.message.answer(text, reply_markup=markup)
+            await callback.message.answer(
+                text, reply_markup=markup, parse_mode=result.parse_mode
+            )
     await callback.answer()

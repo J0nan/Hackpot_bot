@@ -134,6 +134,17 @@ def test_confirm_kb_labels_destination_folder() -> None:
     rows = _cells(confirm_kb("02_Web_Application/Vulnerability_Specific"))
     assert rows[0][0] == ("✅ Commit to 02_Web_Application/Vulnerability_Specific", "✅")
     assert rows[1][0] == ("❌ Cancel", "❌")
+    # T2/S4.1: the approved third row — ✏️ Edit, callback_data "e".
+    assert rows[2][0] == ("✏️ Edit", "e")
+    assert len(rows) == 3
+
+
+def test_confirm_kb_edit_payload_is_short_and_path_free() -> None:
+    rows = _cells(confirm_kb("01_Recon/OSINT"))
+    for row in rows:
+        for _, data in row:
+            assert "/" not in data
+            assert len(data.encode("utf-8")) <= 64  # Telegram callback_data budget
 
 
 # ---------------------------------------------------------------- /help

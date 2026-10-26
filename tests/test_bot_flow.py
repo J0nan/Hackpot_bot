@@ -27,9 +27,11 @@ from app.bot.flow import (
     ConfirmKB,
     CostKB,
     FoldersKB,
+    PREVIEW,
     ResourceFlow,
     SLOW_DOWN,
     TypeKB,
+    UNKNOWN_CALLBACK,
     UNKNOWN_FOLDER,
     make_github_factory,
 )
@@ -625,6 +627,181 @@ async def test_confirm_without_pat_asks_for_token(h: dict) -> None:
     assert (await get_active_resource_for_user(h["conn"], USER)).state == "CONFIRMING"
 
 
+# ------------------------------------------------------- ✏️ bullet edit (T2)
+
+
+CONFIRMED_URL = GITHUB_URL  # the reviewed link the URL lock keeps
+
+
+def _edited_bullet(desc: str, tags: str = "`type:tool` `free` `linux`") -> str:
+    return f"- [awesome-tool]({CONFIRMED_URL}) — {desc}. {tags}"
+
+
+async def test_edit_button_in_confirming_replies_copyable_bullet(h: dict) -> None:
+    """S1/S4.2: ✏️ Edit answers with a rendered code block of the current bullet."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    stored = (await get_resource(h["conn"], rid)).entry_line
+
+    result = await flow.handle_callback(USER, "jonan", "e")
+
+    assert len(result.replies) == 2
+    assert "copy" in result.replies[0].lower()  # short instruction
+    assert result.replies[1] == f"<pre>{stored}</pre>"  # copy-friendly block, verbatim
+    assert result.keyboard is None  # the ✅/❌ bubble must stay usable
+    assert result.new_message is True
+    assert result.parse_mode == "HTML"
+
+    resource = await get_resource(h["conn"], rid)
+    assert resource.state == "CONFIRMING" and resource.entry_line == stored  # nothing changed
+    assert await _audit(h, "entry_edit_requested")
+
+
+async def test_edit_callback_outside_confirming_is_unknown(h: dict) -> None:
+    """S4.6: "e" is only a CONFIRMING action; elsewhere it is the audited unknown."""
+    flow = await _to_placement(h)
+    result = await flow.handle_callback(USER, "jonan", "e")
+    assert result.replies == (UNKNOWN_CALLBACK,)
+    assert result.keyboard is None
+    rows = await _audit(h, "callback_ignored")
+    assert rows and rows[-1]["detail"] == "data=e"
+
+    await flow.handle_folder_choice(USER, CHOSEN)  # AWAITING_ENTRY_INFO
+    result = await flow.handle_callback(USER, "jonan", "e")
+    assert result.replies == (UNKNOWN_CALLBACK,)
+    assert (await get_active_resource_for_user(h["conn"], USER)).state == "AWAITING_ENTRY_INFO"
+
+
+async def test_paste_edited_bullet_persists_and_resends_confirmation(h: dict) -> None:
+    """S2/S4.3: a valid paste rebuilds via build_entry_line, persists, re-previews."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    edited = _edited_bullet("A superb recon tool", "`type:tool` `free` `linux` `windows`")
+
+    result = await flow.handle_text(USER, "jonan", edited)
+
+    resource = await get_resource(h["conn"], rid)
+    assert resource.state == "CONFIRMING"
+    assert resource.entry_line == edited
+    assert result.replies == (f"{PREVIEW}\n{edited}",)  # confirmation exactly as before
+    assert isinstance(result.keyboard, ConfirmKB) and result.keyboard.folder == CHOSEN
+    assert result.parse_mode is None
+    assert await _audit(h, "entry_edited")
+
+
+async def test_paste_with_equivalent_url_rebuilds_on_the_reviewed_link(h: dict) -> None:
+    """S3: the lock is _canonical_url-based; the rebuild keeps the stored raw URL."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    paste = f"- [awesome-tool]({CONFIRMED_URL}/) — Sharper summary. `type:tool` `free` `linux`"
+
+    result = await flow.handle_text(USER, "jonan", paste)
+
+    expected = _edited_bullet("Sharper summary")
+    assert (await get_resource(h["conn"], rid)).entry_line == expected
+    assert result.replies == (f"{PREVIEW}\n{expected}",)
+    assert isinstance(result.keyboard, ConfirmKB)
+
+
+async def test_paste_changed_url_is_rejected_and_retryable(h: dict) -> None:
+    """S3/S4.4: a different link is refused with one clear error + the copyable bullet."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    stored = (await get_resource(h["conn"], rid)).entry_line
+    paste = "- [awesome-tool](https://github.com/EvilOrg/awesome-tool) — A tool for things. `type:tool` `free` `linux`"
+
+    result = await flow.handle_text(USER, "jonan", paste)
+
+    assert len(result.replies) == 2
+    assert "url" in result.replies[0].lower() or "link" in result.replies[0].lower()
+    assert result.replies[1] == f"<pre>{stored}</pre>"  # retry affordance, unchanged bullet
+    assert result.keyboard is None
+    assert result.parse_mode == "HTML"
+    resource = await get_resource(h["conn"], rid)
+    assert resource.state == "CONFIRMING" and resource.entry_line == stored  # nothing persisted
+    assert await _audit(h, "entry_edit_rejected")
+
+
+async def test_paste_garbage_replies_specific_error_and_retry_bullet(h: dict) -> None:
+    """S4.4: unparseable input names the single problem; state and bullet untouched."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    stored = (await get_resource(h["conn"], rid)).entry_line
+
+    result = await flow.handle_text(USER, "jonan", "just prose, not a bullet")
+
+    assert "missing leading dash" in result.replies[0].lower()
+    assert result.replies[1] == f"<pre>{stored}</pre>"
+    resource = await get_resource(h["conn"], rid)
+    assert resource.state == "CONFIRMING" and resource.entry_line == stored
+
+    # Uppercase scheme stays rejected (deliberate pre-existing rule, L5) — format
+    # error, not the URL-lock error.
+    result = await flow.handle_text(
+        USER, "jonan", f"- [awesome-tool](HTTPS://github.com/OtherOrg/awesome-tool) — d. `type:tool`"
+    )
+    assert "https://" in result.replies[0].lower() or "url" in result.replies[0].lower()
+    assert (await get_resource(h["conn"], rid)).entry_line == stored
+
+
+async def test_paste_tagless_bullet_rejected_not_crashed(h: dict) -> None:
+    """L5: a tagless paste parses but cannot be rebuilt → the S4.4 error, never a crash."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    stored = (await get_resource(h["conn"], rid)).entry_line
+    paste = f"- [awesome-tool]({CONFIRMED_URL}) — A tool for things."
+
+    result = await flow.handle_text(USER, "jonan", paste)
+
+    assert "type tag" in result.replies[0].lower()
+    assert result.replies[1] == f"<pre>{stored}</pre>"
+    resource = await get_resource(h["conn"], rid)
+    assert resource.state == "CONFIRMING" and resource.entry_line == stored
+
+
+async def test_paste_over_name_cap_rejected_with_retry_bullet(h: dict) -> None:
+    """S4.4: over-cap fields are refused by the shared builder caps, retry stays open."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    stored = (await get_resource(h["conn"], rid)).entry_line
+    paste = _edited_bullet("A tool for things").replace("[awesome-tool]", f"[{'n' * 121}]")
+
+    result = await flow.handle_text(USER, "jonan", paste)
+
+    assert "120" in result.replies[0] and "limit" in result.replies[0].lower()
+    assert result.replies[1] == f"<pre>{stored}</pre>"
+    assert (await get_resource(h["conn"], rid)).entry_line == stored
+
+
+async def test_edit_then_confirm_commits_the_edited_bullet(h: dict) -> None:
+    """S4.5: ✅ must commit the edited entry_line verbatim, not the original preview."""
+    flow, _ = await _to_confirming(h)
+    edited = _edited_bullet("A superb recon tool")
+    await flow.handle_text(USER, "jonan", edited)
+
+    await flow.handle_confirm(USER)
+
+    commit_call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]
+    assert commit_call[1] == f"{CHOSEN}/README.md"
+    assert commit_call[2] == edited  # verbatim, exactly what the paste persisted
+
+
+async def test_repeated_edits_each_persist_and_the_last_one_wins(h: dict) -> None:
+    """S4.4: editing may repeat any number of times; ✅ commits the latest bullet."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    first, second = _edited_bullet("First rewrite"), _edited_bullet("Second rewrite")
+
+    await flow.handle_text(USER, "jonan", first)
+    assert (await get_resource(h["conn"], rid)).entry_line == first
+    await flow.handle_text(USER, "jonan", second)
+    assert (await get_resource(h["conn"], rid)).entry_line == second
+
+    await flow.handle_confirm(USER)
+    commit_call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]
+    assert commit_call[2] == second
+
+
 # ---------------------------------------------------------------- factories
 
 
@@ -790,9 +967,11 @@ class FakeMessage:
         self.from_user = FakeUser(user_id, username)
         self.text = text
         self.answers: list[str] = []
+        self.parse_modes: list[object] = []
 
-    async def answer(self, text: str, reply_markup: Any = None) -> None:
+    async def answer(self, text: str, reply_markup: Any = None, parse_mode: Any = None) -> None:
         self.answers.append(text)
+        self.parse_modes.append(parse_mode)
 
     async def delete(self) -> None:
         pass
@@ -805,3 +984,19 @@ async def test_handler_sends_the_analyzing_reply_first(h: dict) -> None:
     await handlers.on_text(message, h["deps"], h["flow"])
     assert message.answers[0] == ANALYZING_TEXT
     assert any("folder" in text.lower() for text in message.answers[1:])
+    # PRESERVE: ordinary replies still carry no parse mode (bot default).
+    assert all(mode is None for mode in message.parse_modes)
+
+
+async def test_handler_renders_retry_bullet_as_html_code_block(h: dict) -> None:
+    """The parse_mode on FlowResult reaches message.answer (T2 edit wiring)."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    stored = (await get_resource(h["conn"], rid)).entry_line
+
+    message = FakeMessage(USER, "jonan", "not a bullet at all")
+    await handlers.on_text(message, h["deps"], flow)
+
+    assert message.answers[-1] == f"<pre>{stored}</pre>"
+    assert message.parse_modes[-1] == "HTML"  # renders as a copyable code block
+    assert len(message.answers) == 2  # exactly one error message, then the bullet block

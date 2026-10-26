@@ -21,6 +21,13 @@ Design contracts (ODD L8 seam contract + L7 follow-ups honored here):
     request-id-bearing message; the user only ever sees the safe wording.
   * Callback payloads carry indices into ``sorted(settings.categories)``
     only (64-byte limit, no raw paths); the flow resolves them back.
+  * T2 (entry-bullet-edit-confirm): the ✏️ Edit loop stays inside CONFIRMING.
+    Pressing it answers as a NEW message (``FlowResult.new_message``) with the
+    bullet in a pre-escaped HTML ``<pre>`` block (``FlowResult.parse_mode``), so
+    the ✅/❌ bubble survives; a pasted line is re-parsed with
+    ``parse_entry_line``, URL-locked via ``_canonical_url`` and rebuilt through
+    ``build_entry_line`` — the L7-1 guard is deliberately never applied to
+    pasted bullets (they legitimately carry brackets and backticked tags).
 
 Hardening (T7; ODD L11 a/b/c), all pinned in tests/test_bot_flow.py:
   * L11-a: those indices are parsed strictly (``^\\d+$``, ASCII digits) — a
@@ -68,10 +75,13 @@ from app.services.github import (
     COST_TAGS,
     ENTRY_TYPES,
     DuplicateError,
+    EntryLineError,
     FetchError,
     GitHubClient,
+    _canonical_url,
     build_entry_line,
     leaf_title_from_path,
+    parse_entry_line,
     parse_repo_url,
 )
 
@@ -183,7 +193,32 @@ COMMIT_REJECTED = (
 )
 CANCELLED_MSG = "🚫 Cancelled — nothing was uploaded. Send a new link any time."
 NOTHING_PENDING = "There is nothing pending to cancel. /start to begin."
-CONFIRMING_HINT = "Use the ✅ Commit / ❌ Cancel buttons above, or /cancel to abort."
+CONFIRMING_HINT = (
+    "Use the ✅ Commit / ✏️ Edit / ❌ Cancel buttons above, send the edited "
+    "bullet back, or /cancel to abort."
+)
+# T2 (entry-bullet-edit-confirm, S1-S4): ✏️ Edit loop wording, user-safe and
+# static — the pasted bullet itself is never echoed beyond parse errors.
+EDIT_BULLET_ASK = (
+    "✏️ Copy the bullet below, edit the name, description or tags (keep the "
+    "reviewed link and the leading `type:` tag), then send it back as one "
+    "message. Nothing is committed until you press ✅ — the buttons above stay "
+    "usable meanwhile."
+)
+EDIT_URL_LOCKED = (
+    "Your edit changed the link — the URL must stay exactly the reviewed one. "
+    "Edit only the name, description or tags, then send the bullet again."
+)
+EDIT_NO_TYPE_TAG = (
+    "Missing type tag: the first tag must be one of "
+    + ", ".join(f"`type:{tag}`" for tag in ENTRY_TYPES)
+    + " — fix it and send the bullet again."
+)
+EDIT_FAILED = (
+    "That edit can't be applied to the entry format — check the tag order and "
+    "the length limits, then send the bullet again."
+)
+EDIT_RETRY_DETAIL_MAX = 200  # cap for a parse-error line echoed back for retry
 FORGOTTEN = "🧹 Your stored GitHub token was deleted. /start to save a new one."
 DECRYPT_FAILED = (
     "Your stored GitHub token could not be decrypted. Use /forget, then /start "
@@ -222,11 +257,21 @@ class ConfirmKB:
 
 @dataclass(frozen=True)
 class FlowResult:
-    """Actions for the handler: reply texts, one keyboard, delete this message."""
+    """Actions for the handler: reply texts, one keyboard, delete this message.
+
+    ``new_message`` asks a callback answer to go out as fresh message(s) instead
+    of editing the button bubble — the ✏️ Edit reply must leave the ✅/❌
+    confirmation usable (T2, S4.2). ``parse_mode`` (e.g. ``"HTML"``) is handed
+    to every send of this result, so the flow can ship pre-escaped code blocks
+    without changing the bot-wide default (none): the flow owns the escaping,
+    the handler only renders.
+    """
 
     replies: tuple[str, ...] = ()
     keyboard: CandidatesKB | FoldersKB | TypeKB | CostKB | ConfirmKB | None = None
     delete_message: bool = False
+    new_message: bool = False
+    parse_mode: str | None = None
 
 
 @dataclass
@@ -288,6 +333,20 @@ def _load_iv(entry_line: str) -> dict[str, Any]:
 def _first_paragraph(text: str) -> str:
     para = (text or "").strip().split("\n\n", 1)[0].strip()
     return sanitize_line(para, _DESC_MAX)
+
+
+PARSE_HTML = "HTML"  # per-result parse mode (T2); the bot default stays unset
+
+
+def _html_escape(text: str) -> str:
+    """Telegram HTML-entity escape: only ``&``, ``<`` and ``>`` are special."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _code_block(text: str) -> str:
+    """One <pre> block: renders monospace, and copying it yields the bullet
+    verbatim (S4.2 copy fidelity). Escaped here so no payload can break markup."""
+    return f"<pre>{_html_escape(text)}</pre>"
 
 
 class ResourceFlow:
@@ -377,7 +436,10 @@ class ResourceFlow:
             return FlowResult((PLACEMENT_HINT,))
         if state == "AWAITING_ENTRY_INFO":
             return await self._interview_text(user_id, active, text)
-        # CONFIRMING (and anything unexpected): buttons drive the next step.
+        if state == "CONFIRMING":
+            # T2 (S4.3): plain text during CONFIRMING is a ✏️ Edit paste attempt.
+            return await self._handle_confirming_text(user_id, active, text)
+        # Anything unexpected: buttons drive the next step.
         return FlowResult((CONFIRMING_HINT,))
 
     async def handle_callback(self, user_id: int, username: str, data: str) -> FlowResult:
@@ -400,6 +462,17 @@ class ResourceFlow:
             return await self.handle_confirm(user_id)
         if data == "❌":
             return await self.handle_cancel(user_id)
+        if data == "e":
+            # S4.1/S4.2: ✏️ Edit is only a CONFIRMING action; anywhere else the
+            # tail below audits it as the unknown callback it is.
+            confirming = await self._active(user_id)
+            if confirming is not None and confirming.state == "CONFIRMING":
+                await self._log("entry_edit_requested", user_id, confirming.id)
+                return FlowResult(
+                    (EDIT_BULLET_ASK, _code_block(confirming.entry_line)),
+                    new_message=True,
+                    parse_mode=PARSE_HTML,
+                )
 
         active = await self._active(user_id)
         if active is not None and active.state == "AWAITING_ENTRY_INFO":
@@ -778,6 +851,58 @@ class ResourceFlow:
         _transition(resource.id, resource.state, "CONFIRMING")
         await self._log("entry_preview", user_id, resource.id, detail=f"folder={resource.folder}")
         return FlowResult((f"{PREVIEW}\n{line}",), keyboard=ConfirmKB(resource.folder))
+
+    async def _handle_confirming_text(self, user_id: int, resource: Any, text: str) -> FlowResult:
+        """T2 (S2-S4.3/S4.4): a pasted line while CONFIRMING is a bullet edit attempt.
+
+        ``parse_entry_line`` → URL lock against the reviewed link (``_canonical_url``,
+        S3) → rebuild through ``build_entry_line`` so the interview caps stay
+        single-sourced → persist and re-send the very same confirmation as
+        ``_build_preview`` does. Every rejection answers exactly one user-safe
+        error naming the problem plus the copyable current bullet; state, bullet
+        and the ✅/❌ bubble stay untouched, so the edit may be retried freely.
+        The L7-1 bracket/backtick guard is deliberately NOT reused here — a
+        bullet legitimately carries brackets and backticked tags (spec L5).
+        """
+        retry = _code_block(resource.entry_line)
+
+        try:
+            parsed = parse_entry_line(text)
+        except EntryLineError as exc:  # T1 messages name one problem, payload-free
+            await self._log("entry_edit_rejected", user_id, resource.id, detail=str(exc))
+            error = _html_escape(sanitize_line(str(exc), EDIT_RETRY_DETAIL_MAX))
+            return FlowResult((error, retry), parse_mode=PARSE_HTML)
+
+        if _canonical_url(parsed.url) != _canonical_url(resource.url):
+            await self._log("entry_edit_rejected", user_id, resource.id, detail="reason=url-changed")
+            return FlowResult((EDIT_URL_LOCKED, retry), parse_mode=PARSE_HTML)
+
+        # L5 rebuild mapping: tags[0] = "type:x", next only if a cost tag, rest
+        # are platform tags. A tagless (or bad-type) paste parses but cannot be
+        # rebuilt — surface S4.4, never crash.
+        head = parsed.tags[0] if parsed.tags else ""
+        type_tag = head[len("type:"):] if head.startswith("type:") else ""
+        if type_tag not in ENTRY_TYPES:
+            await self._log("entry_edit_rejected", user_id, resource.id, detail="reason=type-tag")
+            return FlowResult((EDIT_NO_TYPE_TAG, retry), parse_mode=PARSE_HTML)
+        platform_tags = list(parsed.tags[1:])
+        cost_tag = ""
+        if platform_tags and platform_tags[0] in COST_TAGS:
+            cost_tag = platform_tags.pop(0)
+
+        try:
+            new_line = build_entry_line(
+                parsed.name, resource.url, parsed.description, type_tag, cost_tag, platform_tags
+            )
+        except ValueError as exc:  # defensive: parse already enforced the caps
+            await self._log("entry_edit_rejected", user_id, resource.id, detail=str(exc))
+            return FlowResult((EDIT_FAILED, retry), parse_mode=PARSE_HTML)
+
+        await set_resource_state(
+            self.deps.conn, resource.id, "CONFIRMING", entry_line=new_line
+        )
+        await self._log("entry_edited", user_id, resource.id, detail=f"folder={resource.folder}")
+        return FlowResult((f"{PREVIEW}\n{new_line}",), keyboard=ConfirmKB(resource.folder))
 
     # -- confirm / commit (S13, S16) ----------------------------------------------- #
 
