@@ -97,6 +97,101 @@ class TestMergeCategories:
         assert removed == []
         assert merged["01_A/B"]
 
+    def test_readme_descriptions_fill_new_and_placeholder_leaves(self, mod):
+        existing = {"02_Social_Engineering/Phishing": mod.placeholder_criteria(
+            "02_Social_Engineering/Phishing")}
+        live = ["02_Social_Engineering/Phishing", "09_Mobile/Android"]
+        descs = {
+            "02_Social_Engineering/Phishing": "Email phishing platforms and credential harvesting.",
+            "09_Mobile/Android": "Android security tooling and labs.",
+        }
+        merged, _, _ = mod.merge_categories(existing, live, descs)
+        assert merged["02_Social_Engineering/Phishing"] == (
+            "Email phishing platforms and credential harvesting."
+        )
+        assert merged["09_Mobile/Android"] == "Android security tooling and labs."
+
+    def test_default_overwrites_curated_with_readme(self, mod):
+        existing = {"01_Recon_and_OSINT/OSINT": "Hand-tuned criteria"}
+        live = ["01_Recon_and_OSINT/OSINT"]
+        merged, added, _ = mod.merge_categories(existing, live,
+                                                 {"01_Recon_and_OSINT/OSINT": "readme text"})
+        assert merged["01_Recon_and_OSINT/OSINT"] == "readme text"
+        assert added == []
+
+    def test_keep_curated_preserves_hand_written_criteria(self, mod):
+        existing = {"01_Recon_and_OSINT/OSINT": "Hand-tuned criteria"}
+        live = ["01_Recon_and_OSINT/OSINT"]
+        merged, _, _ = mod.merge_categories(existing, live,
+                                            {"01_Recon_and_OSINT/OSINT": "readme text"},
+                                            overwrite=False)
+        assert merged["01_Recon_and_OSINT/OSINT"] == "Hand-tuned criteria"
+
+    def test_keep_curated_still_fills_placeholders(self, mod):
+        existing = {"02_Social_Engineering/Phishing": mod.placeholder_criteria(
+            "02_Social_Engineering/Phishing")}
+        merged, _, _ = mod.merge_categories(
+            existing, ["02_Social_Engineering/Phishing"],
+            {"02_Social_Engineering/Phishing": "Email phishing platforms."},
+            overwrite=False)
+        assert merged["02_Social_Engineering/Phishing"] == "Email phishing platforms."
+
+    def test_overwrite_falls_back_to_existing_when_readme_missing(self, mod):
+        # Default overwrite, but a leaf whose README has no intro keeps its value.
+        existing = {"08_Web_Application/APIs_and_Web_Services": "Hand-tuned criteria"}
+        merged, _, _ = mod.merge_categories(existing, ["08_Web_Application/APIs_and_Web_Services"],
+                                            {})
+        assert merged["08_Web_Application/APIs_and_Web_Services"] == "Hand-tuned criteria"
+
+    def test_missing_readme_description_falls_back_to_placeholder(self, mod):
+        merged, _, _ = mod.merge_categories({}, ["01_A/B"], {"01_A/B": ""})
+        assert merged["01_A/B"] == mod.placeholder_criteria("01_A/B")
+
+
+class TestIsPlaceholder:
+    def test_true_for_empty_and_generated_text(self, mod):
+        assert mod.is_placeholder("")
+        assert mod.is_placeholder("   ")
+        assert mod.is_placeholder(mod.placeholder_criteria("01_Recon_and_OSINT/OSINT"))
+
+    def test_false_for_curated_text(self, mod):
+        assert not mod.is_placeholder("Port scanners like nmap, masscan")
+
+
+class TestExtractReadmeDescription:
+    LEAF_README = (
+        "# Phishing\n"
+        "\n"
+        "Email phishing platforms, campaign infrastructure, credential\n"
+        "harvesting, and detection evasion.\n"
+        "\n"
+        "## Resources\n"
+        "\n"
+        "<!-- Format: - [Name](https://url) — what it does. -->\n"
+        "\n"
+        "- [GoPhish](https://gophish) — phishing platform. Tags: `type:tool` `free`\n"
+    )
+
+    def test_joins_the_first_paragraph_after_the_title(self, mod):
+        assert mod.extract_readme_description(self.LEAF_README) == (
+            "Email phishing platforms, campaign infrastructure, credential "
+            "harvesting, and detection evasion."
+        )
+
+    def test_stops_at_section_heading(self, mod):
+        text = "# Title\n\n## Resources\n\n- [x](https://x) — thing\n"
+        assert mod.extract_readme_description(text) == ""
+
+    def test_skips_html_comments(self, mod):
+        text = "# T\n\n<!-- note\nmulti-line\n-->\n\nReal description here.\n\n## Resources\n"
+        assert mod.extract_readme_description(text) == "Real description here."
+
+    def test_works_without_a_title_heading(self, mod):
+        assert mod.extract_readme_description("Just a paragraph.\n\n## X\n") == "Just a paragraph."
+
+    def test_empty_input(self, mod):
+        assert mod.extract_readme_description("") == ""
+
 
 class TestPlaceholderCriteria:
     def test_humanizes_domain_and_subcategory(self, mod):

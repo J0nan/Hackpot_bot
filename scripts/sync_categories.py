@@ -3,18 +3,24 @@
 
 Reads TARGET_REPO / TARGET_BRANCH / CATEGORIES_JSON from the env file, fetches
 the repository tree in one GitHub API call, finds the live leaf directories
-("NN_Domain/Sub_Category", README.md required by default), and rewrites the
-CATEGORIES_JSON line so the bot follows Hackpot structure changes:
+("NN_Domain/Sub_Category", README.md required by default), reads each leaf's
+README.md intro paragraph (the one-line description under `# Title`), and
+rewrites the CATEGORIES_JSON line so the bot follows Hackpot structure
+changes. The repo is the source of truth:
 
-* leaves that still exist keep their refined decision criteria;
-* new leaves get a placeholder criteria to improve before use;
+* by default every leaf's criteria is OVERWRITTEN with its README intro
+  (a leaf whose README has no intro keeps its previous value);
+* new leaves without a README intro get a placeholder to refine;
+* --keep-curated protects hand-tuned criteria (README fills only gaps);
 * removed leaves are dropped (and reported).
 
 Usage (from the repo root):
     python scripts/sync_categories.py                 # update .env (backs it up)
     python scripts/sync_categories.py --dry-run       # show the diff only
+    python scripts/sync_categories.py --keep-curated  # never overwrite hand-tuned criteria
+    python scripts/sync_categories.py --no-readme     # skip README fetches (fast, 1 API call)
     python scripts/sync_categories.py --json-out categories.json
-    GITHUB_TOKEN=... python scripts/sync_categories.py  # raises the rate limit
+    GITHUB_TOKEN=... python scripts/sync_categories.py  # raises the API rate limit
 
 Only stdlib + httpx (already a project dependency) are used.
 """
@@ -27,6 +33,7 @@ import os
 import re
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -66,6 +73,46 @@ def placeholder_criteria(path: str) -> str:
     return _PLACEHOLDER.format(sub=humanize(sub), domain=humanize(domain))
 
 
+def is_placeholder(text: str) -> bool:
+    """True for blank text or criteria this script generated (never hand-written)."""
+    text = (text or "").strip()
+    return not text or text.endswith("— refine this description.")
+
+
+def extract_readme_description(text: str) -> str:
+    """The leaf README's intro: first paragraph after `# Title`, before `## Resources`.
+
+    Mirrors `app.services.github.leaf_template` (title, blank, one-paragraph
+    description, `## Resources`). HTML comments are skipped; multi-line
+    paragraphs are joined with spaces. '' when there is no description.
+    """
+    desc: list[str] = []
+    past_title = False
+    in_comment = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if in_comment:
+            if "-->" in line:
+                in_comment = False
+            continue
+        if line.startswith("<!--"):
+            if "-->" not in line:
+                in_comment = True
+            continue
+        if line.startswith("#"):
+            if past_title or line.startswith("##"):
+                break
+            past_title = True
+            continue
+        if not line:
+            if desc:
+                break
+            continue
+        past_title = True
+        desc.append(line)
+    return " ".join(desc).strip()
+
+
 def extract_leaf_paths(
     tree: list[dict[str, Any]], require_readme: bool = True
 ) -> tuple[list[str], list[str]]:
@@ -92,13 +139,31 @@ def extract_leaf_paths(
 
 
 def merge_categories(
-    existing: dict[str, str], live: Iterable[str]
+    existing: dict[str, str],
+    live: Iterable[str],
+    descriptions: dict[str, str] | None = None,
+    overwrite: bool = True,
 ) -> tuple[dict[str, str], list[str], list[str]]:
-    """Keep criteria for surviving leaves, placeholder new ones, drop removed."""
+    """Build the new map; priority README intro > existing value > placeholder.
+
+    With `overwrite=True` (the default) every leaf whose README has an intro
+    takes the README text — the repo is the source of truth. With
+    `overwrite=False` only blank/placeholder criteria are replaced, and
+    hand-tuned values survive. Leaves with no README intro always keep their
+    existing non-empty criteria or fall back to the placeholder.
+    """
+    descriptions = descriptions or {}
     live_sorted = sorted(set(live))
     live_set = set(live_sorted)
-    merged = {path: existing.get(path) or placeholder_criteria(path) for path in live_sorted}
-    added = [p for p in live_sorted if p not in existing]
+    merged: dict[str, str] = {}
+    for path in live_sorted:
+        prev = (existing.get(path) or "").strip()
+        readme = (descriptions.get(path) or "").strip()
+        if readme and (overwrite or is_placeholder(prev)):
+            merged[path] = readme
+        else:
+            merged[path] = prev or placeholder_criteria(path)
+    added = [p for p in live_sorted if not (existing.get(p) or "").strip()]
     removed = sorted(p for p in existing if p not in live_set)
     return merged, added, removed
 
@@ -118,7 +183,7 @@ def validate(categories: dict[str, str]) -> None:
 
 def replace_in_env(text: str, categories: dict[str, str]) -> str:
     """Rewrite (or append) the CATEGORIES_JSON line, preserving everything else."""
-    payload = json.dumps(categories, separators=(",", ":"))
+    payload = json.dumps(categories, separators=(",", ":"), ensure_ascii=False)
     lines = text.splitlines(keepends=True)
     for i, line in enumerate(lines):
         if line.lstrip().startswith(PREFIX):
@@ -129,6 +194,45 @@ def replace_in_env(text: str, categories: dict[str, str]) -> str:
     if text and not text.endswith(("\n", "\r")):
         text += newline
     return text + f"{newline}{PREFIX}{payload}{newline}"
+
+
+RAW_ROOT = "https://raw.githubusercontent.com"
+
+
+def readme_raw_url(repo: str, branch: str, leaf: str) -> str:
+    return f"{RAW_ROOT}/{repo}/{quote(branch, safe='')}/{quote(leaf, safe='/')}/README.md"
+
+
+def fetch_readme_descriptions(
+    repo: str, branch: str, leaves: list[str], token: str | None, workers: int = 8
+) -> dict[str, str]:
+    """Fetch each leaf's README (raw host, no API rate limit) and extract its intro.
+
+    Leaves that 404 or fail stay absent — the merge falls back to the
+    placeholder for them; one bad README never aborts the sync.
+    """
+    if not leaves:
+        return {}
+    headers = {"User-Agent": "hackpot-bot-sync-categories"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    out: dict[str, str] = {}
+
+    def one(leaf: str) -> tuple[str, str]:
+        try:
+            resp = httpx.get(readme_raw_url(repo, branch, leaf), headers=headers,
+                             timeout=30.0, follow_redirects=True)
+        except httpx.HTTPError:
+            return leaf, ""
+        if resp.status_code != 200:
+            return leaf, ""
+        return leaf, extract_readme_description(resp.text)
+
+    with ThreadPoolExecutor(max_workers=min(workers, len(leaves))) as pool:
+        for leaf, description in pool.map(one, leaves):
+            if description:
+                out[leaf] = description
+    return out
 
 
 def fetch_tree(repo: str, branch: str, token: str | None) -> list[dict[str, Any]]:
@@ -172,6 +276,16 @@ def main(argv: list[str] | None = None) -> int:
         help="keep leaf dirs even without README.md (the bot reads <leaf>/README.md)",
     )
     parser.add_argument("--no-backup", action="store_true", help="do not write .env.bak before updating")
+    parser.add_argument(
+        "--keep-curated",
+        action="store_true",
+        help="do not overwrite hand-tuned criteria; README fills only blank/placeholder leaves",
+    )
+    parser.add_argument(
+        "--no-readme",
+        action="store_true",
+        help="skip README fetches entirely; new leaves just get placeholders",
+    )
     args = parser.parse_args(argv)
 
     env_path = Path(args.env)
@@ -197,17 +311,46 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Fetching {repo}@{branch} tree from GitHub ...")
     tree = fetch_tree(repo, branch, token)
     leaves, missing = extract_leaf_paths(tree, require_readme=not args.allow_missing_readme)
-    categories, added, removed = merge_categories(existing, leaves)
+
+    # By default the repo is the source of truth: every leaf's README intro is
+    # fetched. --keep-curated only fetches leaves that are blank/placeholder;
+    # --no-readme skips fetches entirely.
+    descriptions: dict[str, str] = {}
+    if not args.no_readme:
+        needs = [
+            p for p in leaves
+            if not args.keep_curated
+            or not (existing.get(p) or "").strip()
+            or is_placeholder(existing.get(p))
+        ]
+        if needs:
+            print(f"Fetching {len(needs)} leaf README description(s) from raw.githubusercontent ...")
+            descriptions = fetch_readme_descriptions(repo, branch, needs, token)
+            print(f"  {len(descriptions)} README intro(s) found.")
+
+    categories, added, removed = merge_categories(
+        existing, leaves, descriptions, overwrite=not args.keep_curated
+    )
     validate(categories)
 
     for path in missing:
         print(f"  ! {path}: no README.md, skipped (use --allow-missing-readme to keep it)")
     for path in added:
-        print(f"  + {path}  (placeholder criteria — refine it)")
+        tag = "criteria from README" if path in descriptions else "placeholder — refine it"
+        print(f"  + {path}  ({tag})")
+    for path in sorted(set(descriptions) - set(added)):
+        prev = (existing.get(path) or "").strip()
+        if not prev or is_placeholder(prev):
+            print(f"  ~ {path}  (placeholder replaced by README intro)")
+        elif descriptions[path] != prev:
+            print(f"  ~ {path}  (README overwrote existing criteria)")
     for path in removed:
         print(f"  - {path}  (gone from the repo)")
-    if not added and not removed and not missing:
+    if not added and not removed and not missing and not descriptions:
         print("  = structure unchanged, criteria preserved")
+    still_ph = sum(1 for v in categories.values() if is_placeholder(v))
+    if still_ph:
+        print(f"  {still_ph} leaf(s) still use placeholder criteria (no README intro found) — refine them.")
     print(f"{len(leaves)} live leaves, {len(categories)} categories in the JSON map.")
 
     if args.json_out:
