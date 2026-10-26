@@ -11,6 +11,7 @@ database connection are always closed (L7-6) — the Bot session is closed by
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import httpx
 from aiogram import Bot, Dispatcher
@@ -22,6 +23,7 @@ from app.config import Settings
 from app.db.database import open_db
 from app.logging_config import get_logger, setup_logging
 from app.security.rate_limit import RateLimiter
+from app.services.category_sync import category_refresh_loop
 
 ALLOWED_UPDATES = ["message", "callback_query"]
 
@@ -32,17 +34,18 @@ async def main() -> None:
     settings = Settings()  # fail-fast: invalid env stops before any I/O
     # Configure logging first (S2/S4): the bot token and Qwen key are handed to
     # the redaction filter so no credential can ever reach the stream.
-    setup_logging(
-        settings.log_level,
-        secrets=(
-            settings.telegram_bot_token.get_secret_value(),
-            settings.qwen_api_key.get_secret_value(),
-            settings.fernet_key.get_secret_value(),
-        ),
+    secrets = (
+        settings.telegram_bot_token.get_secret_value(),
+        settings.qwen_api_key.get_secret_value(),
+        settings.fernet_key.get_secret_value(),
     )
+    if settings.github_token is not None:
+        secrets += (settings.github_token.get_secret_value(),)
+    setup_logging(settings.log_level, secrets=secrets)
     logger.info("hackpot bot starting repo=%s level=%s", settings.target_repo, settings.log_level)
     conn = await open_db(settings.db_path)
     http = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+    sync_task: asyncio.Task | None = None
     try:
         deps = AppDeps(
             settings=settings,
@@ -56,12 +59,20 @@ async def main() -> None:
         bot = Bot(token=settings.telegram_bot_token.get_secret_value())
         dp = Dispatcher(storage=MemoryStorage(), deps=deps, flow=flow)
         dp.include_router(router)
+        # Daily category refresh: wakes at CATEGORY_SYNC_TIME and hot-swaps
+        # settings.categories. No network at construction time.
+        if settings.category_sync_enabled:
+            sync_task = asyncio.create_task(category_refresh_loop(settings))
         logger.info("starting Telegram polling")
         await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
     except Exception:  # noqa: BLE001 - log the traceback, then let it propagate unchanged
         logger.error("unexpected error during polling", exc_info=True)
         raise
     finally:
+        if sync_task is not None:
+            sync_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sync_task
         await http.aclose()
         await conn.close()
 

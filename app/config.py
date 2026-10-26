@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     # LOG_LEVEL (env, case-insensitive via model_config) — drives setup_logging.
     # Default keeps every existing Settings construction green (S6).
     log_level: str = "INFO"
+    # Daily automatic category sync (app.services.category_sync): a background
+    # task hot-swaps settings.categories every day at CATEGORY_SYNC_TIME
+    # (24h HH:MM, local wall clock) so the running bot and decision model use
+    # the latest Hackpot leaves without a restart. Defaults keep every
+    # existing construction green (all optional).
+    category_sync_enabled: bool = True
+    category_sync_time: str = "00:00"
+    category_sync_keep_curated: bool = False
+    # Optional read-only GitHub token for the daily sync (raises the API rate
+    # limit; the CLI reads the same variable).
+    github_token: SecretStr | None = None
 
     @field_validator("authorized_user_ids", mode="before")
     @classmethod
@@ -115,6 +126,14 @@ class Settings(BaseSettings):
         if cleaned not in LEVELS:
             raise ValueError(f"LOG_LEVEL must be one of {', '.join(LEVELS)}, got {value!r}")
         return cleaned
+
+    @field_validator("category_sync_time")
+    @classmethod
+    def _check_sync_time(cls, value: str) -> str:
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})", (value or "").strip())
+        if not match or int(match.group(1)) > 23 or int(match.group(2)) > 59:
+            raise ValueError("CATEGORY_SYNC_TIME must be 'HH:MM' on a 24-hour clock")
+        return f"{int(match.group(1)):02d}:{int(match.group(2)):02d}"
 
     @field_validator("fernet_key")
     @classmethod
