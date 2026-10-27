@@ -16,14 +16,15 @@ from collections.abc import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.bot.folder_picker import PAGE_SIZE, count_pages, keycap, page_slice
 from app.services.decision import FolderCandidate
 from app.services.github import COST_TAGS, ENTRY_TYPES
 
 OTHER_FOLDERS_LABEL = "📂 Other folder…"
 BACK_LABEL = "⬅️ Back"
 NEXT_LABEL = "Next ➡️"
-PAGE_SIZE = 10
-FOLDERS_PER_ROW = 2
+BUTTONS_PER_ROW = 5
+TG_BUTTON_TEXT_LIMIT = 64  # Telegram caps button text at 64 UTF-16 code units
 
 HELP_TEXT = (
     "Hackpot resource bot — index a public resource into the right leaf category.\n"
@@ -49,17 +50,45 @@ def _button(text: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=data)
 
 
+def _utf16_len(text: str) -> int:
+    """Telegram measures button text in UTF-16 code units (emoji = 2)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _fit_folder_button(prefix: str, folder: str, suffix: str = "") -> str:
+    """Assemble ``prefix + folder + suffix`` within the 64-unit button cap.
+
+    Labels that fit are returned byte-for-byte unchanged; only an overflowing
+    folder part is middle-elided, keeping the leaf tail (the identifying part)
+    and the full suffix (percentages, punctuation).
+    """
+    label = f"{prefix}{folder}{suffix}"
+    if _utf16_len(label) <= TG_BUTTON_TEXT_LIMIT:
+        return label
+    room = TG_BUTTON_TEXT_LIMIT - _utf16_len(prefix + suffix) - 1  # 1 for "…"
+    if room <= 0:
+        return f"{prefix}…"
+    return f"{prefix}…{folder[-room:]}{suffix}"
+
+
 def candidates_kb(
     candidates: Sequence[FolderCandidate], folders_sorted: Sequence[str]
 ) -> InlineKeyboardMarkup:
-    """One button per ranked candidate (S7) plus the full-list override."""
+    """Number buttons (1..N in rank order) for the candidates_list_html caption.
+
+    The full path and confidence percent moved to the HTML message so phones
+    show them whole; payloads stay global ``c:<i>`` indices (S7), and the
+    full-list override button is unchanged.
+    """
+    buttoned = [c for c in candidates if c.folder in folders_sorted]
     rows: list[list[InlineKeyboardButton]] = []
-    for candidate in candidates:
-        if candidate.folder not in folders_sorted:
-            continue  # only configured leaves can ever be buttoned
-        percent = int(candidate.probability * 100)
-        index = folders_sorted.index(candidate.folder)
-        rows.append([_button(f"📁 {candidate.folder} ({percent}%)", f"c:{index}")])
+    for offset in range(0, len(buttoned), BUTTONS_PER_ROW):
+        rows.append(
+            [
+                _button(keycap(offset + i + 1), f"c:{folders_sorted.index(c.folder)}")
+                for i, c in enumerate(buttoned[offset : offset + BUTTONS_PER_ROW])
+            ]
+        )
     rows.append([_button(OTHER_FOLDERS_LABEL, "o")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -67,22 +96,25 @@ def candidates_kb(
 def folders_kb(
     folders_sorted: Sequence[str], page: int = 0, size: int = PAGE_SIZE
 ) -> InlineKeyboardMarkup:
-    """Paged override list: every button is an index into the sorted leaves."""
-    page = max(0, int(page))
-    start = page * size
-    chunk = list(folders_sorted[start : start + size])
+    """Number buttons (1..N, page-local) for the folders_list_html caption.
+
+    Long leaf paths were unreadable on phones, so the full names moved to the
+    HTML message (app/bot/folder_picker.py); the keyboard carries just the
+    matching numbers, still resolving to global ``f:<i>`` index payloads.
+    """
+    page, start, chunk = page_slice(folders_sorted, page, size)
     rows: list[list[InlineKeyboardButton]] = []
-    for offset in range(0, len(chunk), FOLDERS_PER_ROW):
+    for offset in range(0, len(chunk), BUTTONS_PER_ROW):
         rows.append(
             [
-                _button(f"📂 {folder}", f"f:{start + offset + i}")
-                for i, folder in enumerate(chunk[offset : offset + FOLDERS_PER_ROW])
+                _button(keycap(offset + i + 1), f"f:{start + offset + i}")
+                for i, _folder in enumerate(chunk[offset : offset + BUTTONS_PER_ROW])
             ]
         )
     nav: list[InlineKeyboardButton] = []
     if page > 0:
         nav.append(_button(BACK_LABEL, f"p:{page - 1}"))
-    if start + size < len(folders_sorted):
+    if page + 1 < count_pages(folders_sorted, size):
         nav.append(_button(NEXT_LABEL, f"p:{page + 1}"))
     if nav:
         rows.append(nav)
@@ -108,7 +140,7 @@ def cost_kb() -> InlineKeyboardMarkup:
 def confirm_kb(folder: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_button(f"✅ Commit to {folder}", "✅")],
+            [_button(_fit_folder_button("✅ Commit to ", folder), "✅")],
             [_button("❌ Cancel", "❌")],
             # S6.1 (T4): one row, two field-edit buttons — payloads "d"/"t",
             # valid only while CONFIRMING. The whole-bullet "e" row is removed.

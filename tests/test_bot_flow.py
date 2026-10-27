@@ -351,6 +351,13 @@ async def test_github_url_fetches_readme_then_classifies_into_candidates(h: dict
     assert resource.state == "AWAITING_PLACEMENT"
     assert isinstance(result.keyboard, CandidatesKB)
     assert [c.folder for c in result.keyboard.candidates] == [CHOSEN, FOLDERS[0]]
+    # Keycap'd caption (Option B) carries the readable names and percents.
+    assert result.parse_mode == "HTML"
+    caption = result.replies[-1]
+    assert "1\uFE0F\u20E3 Vulnerability Specific" in caption
+    assert "02 · Web Application" in caption and "75%" in caption
+    assert "2\uFE0F\u20E3 OSINT" in caption and "20%" in caption
+    assert "Other folder" in caption
 
     async with h["conn"].execute("SELECT * FROM decisions WHERE resource_id = ?", (resource.id,)) as cur:
         row = dict(await cur.fetchone())
@@ -460,11 +467,23 @@ async def test_folder_choice_rejects_invalid_callback_index(h: dict) -> None:
 
 
 async def test_other_folders_pages(h: dict) -> None:
+    def KC(n: int) -> str:
+        return f"{n}\uFE0F\u20E3"
+
     flow = await _to_placement(h)
     result = await flow.handle_callback(USER, "jonan", "o")
     assert isinstance(result.keyboard, FoldersKB) and result.keyboard.page == 0
+    # Option B: the full paths ride in an HTML caption, keycap'd numbers that
+    # match the caption lines one-to-one on the keyboard.
+    assert result.parse_mode == "HTML"
+    text = result.replies[0]
+    assert "Page 1 of 1" in text
+    for number, folder in zip([KC(1), KC(2), KC(3)], FOLDERS):
+        assert number in text
+        assert folder.split("/")[1].replace("_", " ") in text
     result = await flow.handle_callback(USER, "jonan", "p:1")
     assert isinstance(result.keyboard, FoldersKB) and result.keyboard.page == 1
+    assert "Page 1 of 1" in result.replies[0]  # 3 folders fit one page: clamped
     result = await flow.handle_callback(USER, "jonan", f"f:{FOLDERS.index(FOLDERS[2])}")
     resource = await get_active_resource_for_user(h["conn"], USER)
     assert resource.folder == FOLDERS[2]
@@ -1116,8 +1135,10 @@ async def test_handler_sends_the_analyzing_reply_first(h: dict) -> None:
     await handlers.on_text(message, h["deps"], h["flow"])
     assert message.answers[0] == ANALYZING_TEXT
     assert any("folder" in text.lower() for text in message.answers[1:])
-    # PRESERVE: ordinary replies still carry no parse mode (bot default).
-    assert all(mode is None for mode in message.parse_modes)
+    # PRESERVE: the early progress sink keeps the bot default (no parse mode).
+    assert message.parse_modes[0] is None
+    # The decision card now opts into HTML per-result (Option B numbered caption).
+    assert all(mode == "HTML" for mode in message.parse_modes[1:])
 
 
 async def test_handler_text_without_marker_only_hints(h: dict) -> None:

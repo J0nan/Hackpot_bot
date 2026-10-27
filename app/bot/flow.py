@@ -60,7 +60,7 @@ import aiosqlite
 import httpx
 
 from app.config import Settings
-from app.bot import pending_edits
+from app.bot import folder_picker, pending_edits
 from app.db.database import ACTIVE_STATES
 from app.db.repository import (
     audit,
@@ -172,8 +172,8 @@ DECISION_FAILED_USER = (
     "committed — you can send the link again later or use /cancel."
 )
 PLACEMENT_HINT = (
-    "Pick a destination folder from the buttons above (📂 Other folder… lists "
-    "every category)."
+    "Pick a destination folder — press its number above (📂 Other folder… "
+    "lists every category)."
 )
 UNKNOWN_FOLDER = "That folder is not in the configured category list."
 ASK_NAME = "What display name should the entry use? (one line, no [ ] or backticks)"
@@ -741,12 +741,30 @@ class ResourceFlow:
         replies = [f"Done thinking — {len(result.candidates)} folder(s) cleared the bar."]
         if not result.candidates:
             replies.append("No folder reached the confidence threshold — pick one via 📂 Other folder…")
-        return FlowResult(tuple(replies), keyboard=CandidatesKB(tuple(result.candidates)))
+        else:
+            # Option B on the decision card: readable numbered caption, number buttons.
+            replies.append(
+                folder_picker.candidates_list_html(
+                    result.candidates, sorted(settings.categories)
+                )
+            )
+        return FlowResult(
+            tuple(replies),
+            keyboard=CandidatesKB(tuple(result.candidates)),
+            parse_mode=PARSE_HTML,
+        )
 
     # -- placement ---------------------------------------------------------------- #
 
     async def handle_more_folders(self, user_id: int, page: int = 0) -> FlowResult:
-        return FlowResult(("Pick the destination folder:",), keyboard=FoldersKB(page=max(0, int(page))))
+        """Numbered picker: full readable paths in an HTML caption, numbers as buttons."""
+        page = max(0, int(page))
+        folders = sorted(self.deps.settings.categories)
+        return FlowResult(
+            (folder_picker.folders_list_html(folders, page),),
+            keyboard=FoldersKB(page=page),
+            parse_mode=PARSE_HTML,
+        )
 
     async def handle_folder_choice(self, user_id: int, folder: str) -> FlowResult:
         resource = await self._active(user_id)
