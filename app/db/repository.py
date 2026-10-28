@@ -19,7 +19,7 @@ from app.db.database import (
     RESOURCE_STATES,
     utc_now,
 )
-from app.db.models import GithubToken, Resource
+from app.db.models import GithubToken, Resource, UserUploadStats
 
 # Columns of `resources` a caller may update alongside a state change.
 # `state` is the positional argument; id/tg_user_id/url/kind/created_at are
@@ -185,6 +185,29 @@ async def list_resources_by_states(
     ) as cursor:
         rows = await cursor.fetchall()
     return [Resource.from_row(row) for row in rows]
+
+
+async def get_upload_leaderboard(
+    conn: aiosqlite.Connection,
+) -> list[UserUploadStats]:
+    """Per-user committed-link tallies for /stats, best curator first.
+
+    Only COMMITTED resources count — the board mirrors the Hackpot index, not
+    abandoned submissions. Ties break by who committed first, then by id, so
+    the ordering is fully deterministic. Users without committed links stay absent.
+    """
+    async with conn.execute(
+        "SELECT r.tg_user_id AS tg_user_id, "
+        "       u.username   AS username, "
+        "       COUNT(*)     AS total "
+        "FROM resources r "
+        "JOIN users u ON u.tg_user_id = r.tg_user_id "
+        "WHERE r.state = 'COMMITTED' "
+        "GROUP BY r.tg_user_id, u.username "
+        "ORDER BY total DESC, MIN(r.created_at) ASC, r.tg_user_id ASC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return [UserUploadStats.from_row(row) for row in rows]
 
 
 async def record_decision(

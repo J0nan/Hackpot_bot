@@ -33,6 +33,7 @@ HELP_TEXT = (
     "/help — this message\n"
     "/cancel — drop the current resource, nothing gets committed\n"
     "/forget — delete my stored GitHub token\n"
+    "/stats — two boards: committed links per curator, and the top tags\n"
     "\n"
     "Send one https link. GitHub repos are read automatically; otherwise I ask "
     "for a summary. Then pick a folder (my suggestions or 📂 Other folder…), "

@@ -346,5 +346,5 @@ def test_confirm_kb_edit_payload_is_short_and_path_free() -> None:
 
 def test_help_text_documents_commands_and_public_rule() -> None:
     assert isinstance(HELP_TEXT, str) and HELP_TEXT
-    for token in ("/start", "/help", "/cancel", "/forget", "public"):
+    for token in ("/start", "/help", "/cancel", "/forget", "/stats", "public"):
         assert token in HELP_TEXT

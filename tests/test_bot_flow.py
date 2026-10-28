@@ -31,6 +31,9 @@ from app.bot.flow import (
     PREVIEW,
     ResourceFlow,
     SLOW_DOWN,
+    STATS_EMPTY,
+    STATS_NO_COMMITS,
+    STATS_TAGS_EMPTY,
     TypeKB,
     UNKNOWN_CALLBACK,
     UNKNOWN_FOLDER,
@@ -51,7 +54,7 @@ from app.security.rate_limit import RateLimiter
 from app.security.sanitizers import sanitize_line
 from app.security.token_store import decrypt_pat
 from app.services.decision import ClassificationResult, DecisionError, FolderCandidate
-from app.services.github import DuplicateError, FetchError
+from app.services.github import DuplicateError, FetchError, build_entry_line
 
 USER = 100
 INTRUDER = 999
@@ -1290,3 +1293,117 @@ async def test_distinct_link_is_not_a_duplicate(h: dict) -> None:
 
     assert isinstance(result.keyboard, CandidatesKB)
     assert len(h["decision"].calls) == 1
+
+
+# ---------------------------------------------------------------- /stats
+
+
+async def _seed_for(h: dict, user_id: int, username: str, url: str, state: str = "NEW", entry_line: str = "") -> int:
+    """One link owned by *user_id* in *state* (leaderboard fixture)."""
+    conn = h["conn"]
+    await upsert_user(conn, user_id, username)
+    rid = await create_resource(conn, user_id, url, "other")
+    updates: dict[str, str] = {"entry_line": entry_line} if entry_line else {}
+    await set_resource_state(conn, rid, state, **updates)
+    return rid
+
+
+async def test_stats_empty_boards_answer_two_messages(h: dict) -> None:
+    result = await h["flow"].handle_stats(USER, "jonan")
+    assert result.replies == (STATS_EMPTY, STATS_TAGS_EMPTY)
+    assert result.keyboard is None
+    assert len(await _audit(h, "stats")) == 1
+
+
+async def test_stats_counts_only_committed_links(h: dict) -> None:
+    await _seed_for(h, 200, "ana", "https://b.example/one", "COMMITTED")
+    await _seed_for(h, 200, "ana", "https://b.example/two", "CANCELLED")  # not counted
+    await _seed_for(h, USER, "jonan", GITHUB_URL, "NEW")  # in flight, not counted
+
+    text = (await h["flow"].handle_stats(USER, "jonan")).replies[0]
+    assert "🥇 @ana — 1 link" in text
+    assert "@jonan" not in text  # caller only has an in-flight link
+    assert text.endswith(STATS_NO_COMMITS)
+
+
+async def test_stats_orders_users_by_committed_links(h: dict) -> None:
+    await _seed_for(h, 200, "ana", "https://b.example/one", "COMMITTED")
+    await _seed_for(h, 200, "ana", "https://b.example/two", "COMMITTED")
+    await _seed_for(h, USER, "jonan", GITHUB_URL, "COMMITTED")
+
+    text = (await h["flow"].handle_stats(USER, "jonan")).replies[0]
+    assert "🏆" in text
+    assert "🥇 @ana — 2 links" in text
+    assert "🥈 @jonan — 1 link" in text
+    assert text.index("@ana") < text.index("@jonan")
+
+
+async def test_stats_notes_caller_without_commits(h: dict) -> None:
+    await _seed_for(h, 200, "ana", "https://b.example/one", "COMMITTED")
+
+    text = (await h["flow"].handle_stats(300, "ghost")).replies[0]
+    assert "🥇 @ana — 1 link" in text
+    assert text.endswith(STATS_NO_COMMITS)
+
+
+async def test_stats_cuts_board_at_ten_and_shows_caller_rank(h: dict) -> None:
+    for i in range(1, 11):
+        await _seed_for(h, 200 + i, f"user{i}", f"https://b.example/{i}", "COMMITTED")
+    await _seed_for(h, USER, "jonan", GITHUB_URL, "COMMITTED")  # 11th curator
+
+    text = (await h["flow"].handle_stats(USER, "jonan")).replies[0]
+    assert text.count("@user") == 10  # only the top ten rows are rendered
+    assert "@jonan" not in text
+    assert "You are #11 — 1 link" in text
+
+
+async def test_stats_tag_board_counts_committed_tags(h: dict) -> None:
+    line_a = build_entry_line("Tool A", "https://t.example/1", "does things", "tool", "free", ["linux", "web"])
+    line_b = build_entry_line("Tool B", "https://t.example/2", "does more", "tool", "paid", ["web"])
+    line_c = build_entry_line("Tool C", "https://t.example/3", "more still", "tool", "free", ["Linux"])
+    await _seed_for(h, 200, "ana", "https://t.example/1", "COMMITTED", entry_line=line_a)
+    await _seed_for(h, 300, "bob", "https://t.example/2", "COMMITTED", entry_line=line_b)
+    await _seed_for(h, 400, "cid", "https://t.example/3", "COMMITTED", entry_line=line_c)
+    await _seed_for(h, 500, "dee", "https://t.example/4", "NEW", entry_line=line_a)  # not counted
+
+    text = (await h["flow"].handle_stats(USER, "jonan")).replies[1]
+    assert "🏷️" in text
+    # type/cost tags count too; ties break alphabetically; case-insensitive dedupe
+    assert "🥇 type:tool — 3 links" in text
+    assert "🥈 free — 2 links" in text
+    assert "🥉 linux — 2 links" in text  # "Linux" folded into "linux", first spelling shown
+    assert "4. web — 2 links" in text
+    assert text.index("free") < text.index("linux") < text.index("web")  # a < l < w
+    assert "Linux" not in text  # one display spelling per tag, not two rows
+
+
+async def test_stats_tag_board_survives_a_tampered_entry_line(h: dict) -> None:
+    await _seed_for(h, 200, "ana", "https://t.example/1", "COMMITTED", entry_line="not a bullet at all")
+
+    result = await h["flow"].handle_stats(USER, "jonan")
+    assert result.replies[1] == STATS_TAGS_EMPTY  # skipped, no crash, nothing counted
+
+
+async def test_stats_does_not_disturb_the_active_flow(h: dict) -> None:
+    """Mid-interview /stats is read-only: the pending resource stays put."""
+    flow = h["flow"]
+    await _capture_token(h)
+    await flow.handle_text(USER, "jonan", GITHUB_URL)
+
+    result = await flow.handle_stats(USER, "jonan")
+
+    assert result.replies == (STATS_EMPTY, STATS_TAGS_EMPTY)  # in-flight links are not on it
+    active = await get_active_resource_for_user(h["conn"], USER)
+    assert active is not None
+
+
+async def test_cmd_stats_handler_sends_both_boards(h: dict) -> None:
+    line = build_entry_line("Tool A", GITHUB_URL, "does things", "tool", "free", ["linux"])
+    await _seed_for(h, USER, "jonan", GITHUB_URL, "COMMITTED", entry_line=line)
+    message = FakeMessage(USER, "jonan", "/stats")
+
+    await handlers.cmd_stats(message, h["deps"], h["flow"])
+
+    assert len(message.answers) == 2  # one message per board (S: different messages)
+    assert "🥇 @jonan — 1 link" in message.answers[0]
+    assert message.answers[1].startswith("🏷️") and "linux — 1 link" in message.answers[1]

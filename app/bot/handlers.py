@@ -142,6 +142,14 @@ async def cmd_forget(message: Message, deps: AppDeps, flow: ResourceFlow) -> Non
     await _send(message, deps, await flow.handle_forget(user_id))
 
 
+@router.message(Command("stats"))
+async def cmd_stats(message: Message, deps: AppDeps, flow: ResourceFlow) -> None:
+    proceed, user_id, username = await _guard_message(message, deps, flow)
+    if not proceed:
+        return
+    await _send(message, deps, await flow.handle_stats(user_id, username))
+
+
 # --------------------------------------------------------------------- text
 
 

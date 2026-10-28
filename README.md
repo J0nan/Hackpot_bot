@@ -45,7 +45,7 @@ and all configuration comes from one `.env` file.
 
 ## Bot commands (BotFather registration)
 
-The bot implements exactly these four commands (`app/bot/handlers.py`). Register them in
+The bot implements exactly these five commands (`app/bot/handlers.py`). Register them in
 the BotFather chat with `/setcommands` and paste this block as-is:
 
 ```text
@@ -53,6 +53,7 @@ start - Add a resource: asks for your GitHub token once, then takes links
 help - Show usage
 cancel - Drop the current resource, nothing gets committed
 forget - Delete my stored GitHub token
+stats - Leaderboards: committed links per curator, and top tags
 ```
 
 Optional, same flow — `/setname`, `/setdescription` and `/setabouttext` set the menu text;
@@ -289,6 +290,10 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
 - **`/forget`** deletes your stored token (rotate a revoked PAT this way), then `/start`
   to save the new one. **`/help`** prints the command list; **`/cancel`** aborts the
   current resource at any step.
+- **`/stats`** sends two messages: the committed-links leaderboard (only
+  COMMITTED resources count, top ten curators shown plus your own rank) and
+  the top-tags board across those committed entries. Read-only — it never
+  disturbs a pending resource.
 
 Entry rules are those of the target repo (its `CONTRIBUTING.md`): one bullet per resource
 inside the leaf's `## Resources`, alphabetical by display name.
@@ -386,6 +391,7 @@ deployment (L11-d):
 - [ ] Start a second resource, and mid-interview run `docker compose restart bot` → resend a
       field: the bot continues the same interview instead of restarting it.
 - [ ] `/cancel` aborts cleanly; `/forget` deletes the token and `/start` asks again.
+- [ ] `/stats` answers two messages: committed links per curator (and your rank past the top ten), then the top tags.
 - [ ] Send a link from an **unauthorized** account → silence (check the audit row appeared).
 
 ---

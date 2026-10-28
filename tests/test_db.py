@@ -27,6 +27,7 @@ from app.db.repository import (
     get_active_resource_for_user,
     get_github_token,
     get_resource,
+    get_upload_leaderboard,
     list_resources_by_states,
     record_decision,
     save_github_token,
@@ -430,3 +431,31 @@ async def test_list_resources_by_states_committed_first_then_newest(
     ids = {r.id for r in rows}
     assert a not in ids and b not in ids
     assert await list_resources_by_states(db, ()) == []
+
+
+# ---------------------------------------------------------------- leaderboard
+
+
+async def test_get_upload_leaderboard_empty_db_is_empty_list(db) -> None:
+    assert await get_upload_leaderboard(db) == []
+
+
+async def test_get_upload_leaderboard_counts_committed_only_and_orders(db) -> None:
+    await upsert_user(db, 1, "alice")
+    await upsert_user(db, 2, "bob")
+    await upsert_user(db, 3, "carol")  # never uploaded a link -> not on the board
+    a1 = await create_resource(db, 1, "https://a.example/one", "other")
+    a2 = await create_resource(db, 1, "https://a.example/two", "other")
+    a3 = await create_resource(db, 1, "https://a.example/three", "other")
+    b1 = await create_resource(db, 2, "https://b.example/one", "github")
+    await set_resource_state(db, a1, "COMMITTED", folder="01_Recon/OSINT")
+    await set_resource_state(db, a2, "COMMITTED", folder="01_Recon/OSINT")
+    await set_resource_state(db, b1, "COMMITTED", folder="01_Recon/OSINT")
+    await set_resource_state(db, a3, "CANCELLED")  # only COMMITTED rows count
+
+    rows = await get_upload_leaderboard(db)
+    # Most committed links first; ties resolved by who committed first, then id.
+    assert [(r.tg_user_id, r.username, r.total) for r in rows] == [
+        (1, "alice", 2),
+        (2, "bob", 1),
+    ]

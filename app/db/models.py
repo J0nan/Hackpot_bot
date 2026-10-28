@@ -85,6 +85,23 @@ class Resource:
 
 
 @dataclass(frozen=True)
+class UserUploadStats:
+    """Derived /stats row: one user's committed-link tally (not a table row)."""
+
+    tg_user_id: int
+    username: str
+    total: int
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Self:
+        return cls(
+            tg_user_id=row["tg_user_id"],
+            username=row["username"],
+            total=row["total"],
+        )
+
+
+@dataclass(frozen=True)
 class Decision:
     """One `decisions` row: the Qwen placement answer kept for audit (S7/S16)."""
 
