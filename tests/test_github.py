@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from app.services.github import (
-    COST_TAGS,
+    LEGACY_COST_TAGS,
     ENTRY_TYPES,
     ConflictError,
     DuplicateError,
@@ -133,73 +133,76 @@ def test_parse_repo_url_accepts_boundary_lengths() -> None:
 
 def test_build_entry_line_exact_output() -> None:
     line = build_entry_line(
-        "Amass", "https://github.com/owasp-amass/amass", "Subdomain enumeration", "tool", "free", ["linux"]
+        "Amass", "https://github.com/owasp-amass/amass", "Subdomain enumeration", "tool", ["linux"]
     )
     assert line == (
         "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
-        "`type:tool` `free` `linux`"
+        "`type:tool` `linux`"
     )
 
 
-def test_build_entry_line_omits_cost_and_platforms() -> None:
-    line = build_entry_line("Nmap", "https://nmap.org", "Port scanner", "tool", "")
+def test_build_entry_line_omits_optional_platforms() -> None:
+    line = build_entry_line("Nmap", "https://nmap.org", "Port scanner", "tool")
     assert line == "- [Nmap](https://nmap.org) — Port scanner. `type:tool`"
 
 
 def test_build_entry_line_type_always_required() -> None:
-    assert "`type:video`" in build_entry_line("V", "https://v.dev", "Talk", "video", "paid")
+    assert "`type:video`" in build_entry_line("V", "https://v.dev", "Talk", "video")
     assert set(ENTRY_TYPES) == {"tool", "course", "docs", "wordlist", "lab", "article", "video"}
-    assert set(COST_TAGS) == {"free", "paid", "freemium"}
+    # The old cost vocabulary survives only as the legacy strip list (S4).
+    assert set(LEGACY_COST_TAGS) == {"free", "paid", "freemium"}
 
 
 @pytest.mark.parametrize("bad_type", ["toolkit", "Tool", "", "blog"])
 def test_build_entry_line_rejects_bad_type(bad_type: str) -> None:
     with pytest.raises(ValueError):
-        build_entry_line("N", "https://n.dev", "Desc", bad_type, "free")
+        build_entry_line("N", "https://n.dev", "Desc", bad_type)
 
 
-@pytest.mark.parametrize("bad_cost", ["gratis", "Free", "open"])
-def test_build_entry_line_rejects_bad_cost(bad_cost: str) -> None:
-    with pytest.raises(ValueError):
-        build_entry_line("N", "https://n.dev", "Desc", "tool", bad_cost)
+def test_build_entry_line_drops_cost_words_from_platform_tags() -> None:
+    # S1: the bot never emits a cost tag, not even when someone types one as
+    # a platform word; S4: old cost words are dropped silently, no error.
+    line = build_entry_line("N", "https://n.dev", "Desc", "tool", ["free", "linux", "paid", "docker"])
+    assert line.endswith("Desc. `type:tool` `linux` `docker`")
 
 
 @pytest.mark.parametrize("name,url", [("", "https://a.dev"), ("  ", "https://a.dev"), ("N", ""), ("N", "   ")])
 def test_build_entry_line_rejects_empty_name_or_url(name: str, url: str) -> None:
     with pytest.raises(ValueError):
-        build_entry_line(name, url, "Desc", "tool", "free")
+        build_entry_line(name, url, "Desc", "tool")
 
 
 def test_build_entry_line_requires_https_url() -> None:
     with pytest.raises(ValueError):
-        build_entry_line("N", "http://a.dev", "Desc", "tool", "free")
+        build_entry_line("N", "http://a.dev", "Desc", "tool")
 
 
 def test_build_entry_line_rejects_raw_newlines() -> None:
     with pytest.raises(ValueError):
-        build_entry_line("N\nx", "https://a.dev", "Desc", "tool", "free")
+        build_entry_line("N\nx", "https://a.dev", "Desc", "tool")
     with pytest.raises(ValueError):
-        build_entry_line("N", "https://a.dev", "one\ntwo", "tool", "free")
+        build_entry_line("N", "https://a.dev", "one\ntwo", "tool")
 
 
 def test_build_entry_line_strips_trailing_punctuation_and_adds_period() -> None:
     for desc in ("Fast scanner", "Fast scanner.", "Fast scanner!! ", "Fast scanner;"):
-        assert build_entry_line("N", "https://a.dev", desc, "tool", "free").endswith(
-            "Fast scanner. `type:tool` `free`"
+        assert build_entry_line("N", "https://a.dev", desc, "tool").endswith(
+            "Fast scanner. `type:tool`"
         )
 
 
 def test_build_entry_line_dedupes_platform_tags_keeping_order() -> None:
     line = build_entry_line(
-        "N", "https://a.dev", "Desc", "docs", "freemium", ["linux", "Windows", "linux", "docker"]
+        "N", "https://a.dev", "Desc", "docs", ["linux", "Windows", "linux", "docker"]
     )
-    assert line.endswith("Desc. `type:docs` `freemium` `linux` `Windows` `docker`")
+    assert line.endswith("Desc. `type:docs` `linux` `Windows` `docker`")
 
 
 # --------------------------------------------------------------------------- #
 # parse_entry_line (entry-bullet-edit-confirm S4.3/S4.4)
 # --------------------------------------------------------------------------- #
 
+#: A LEGACY bullet that still carries a cost tag — it must keep parsing (S4).
 CANONICAL = (
     "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
     "`type:tool` `free` `linux`"
@@ -207,15 +210,17 @@ CANONICAL = (
 
 
 def rebuild_entry_line(parsed: ParsedEntry) -> str:
-    """Rebuild like the flow will: map the parsed tags back onto build's inputs."""
+    """Rebuild like the flow will: map the parsed tags back onto build's inputs.
+
+    Legacy cost words between the type tag and the platform tags are dropped
+    silently — a rebuilt bullet never carries a cost tag (S4).
+    """
     tags = list(parsed.tags)
     type_tag = ""
     if tags and tags[0].startswith("type:"):
         type_tag = tags.pop(0)[len("type:"):]
-    cost_tag = ""
-    if tags and tags[0] in COST_TAGS:
-        cost_tag = tags.pop(0)
-    return build_entry_line(parsed.name, parsed.url, parsed.description, type_tag, cost_tag, tags)
+    tags = [tag for tag in tags if tag not in LEGACY_COST_TAGS]
+    return build_entry_line(parsed.name, parsed.url, parsed.description, type_tag, tags)
 
 
 def test_parse_entry_line_returns_fields() -> None:
@@ -223,19 +228,19 @@ def test_parse_entry_line_returns_fields() -> None:
         name="Amass",
         url="https://github.com/owasp-amass/amass",
         description="Subdomain enumeration",
-        tags=("type:tool", "free", "linux"),
+        tags=("type:tool", "free", "linux"),  # parse stays generic (S4)
     )
 
 
 def test_parse_entry_line_of_build_output_matches_build_inputs() -> None:
     line = build_entry_line(
-        "Amass", "https://github.com/owasp-amass/amass", "Subdomain enumeration", "tool", "free", ["linux"]
+        "Amass", "https://github.com/owasp-amass/amass", "Subdomain enumeration", "tool", ["linux"]
     )
     assert parse_entry_line(line) == ParsedEntry(
         name="Amass",
         url="https://github.com/owasp-amass/amass",
         description="Subdomain enumeration",
-        tags=("type:tool", "free", "linux"),
+        tags=("type:tool", "linux"),
     )
 
 
@@ -252,33 +257,41 @@ def test_parse_entry_line_returns_url_as_typed() -> None:
 
 
 @pytest.mark.parametrize(
-    "name,url,description,type_tag,cost_tag,platform_tags",
+    "name,url,description,type_tag,platform_tags",
     [
         (
             "Amass",
             "https://github.com/owasp-amass/amass",
             "Subdomain enumeration",
             "tool",
-            "free",
             ["linux", "docker"],
         ),
-        ("Nmap", "https://nmap.org", "Port scanner", "tool", "", []),
+        ("Nmap", "https://nmap.org", "Port scanner", "tool", []),
         (
             "Zap and Burp",
             "https://zaproxy.org",
             "Herramienta de pentesting, con acentos: é and emoji 🧪",
             "docs",
-            "freemium",
             ["gui", "Web"],
         ),
-        ("A — B Tool", "https://unicode.example/路径", "Name carries an em-dash — café", "course", "paid", []),
+        ("A — B Tool", "https://unicode.example/路径", "Name carries an em-dash — café", "course", []),
     ],
 )
 def test_parse_entry_line_roundtrip_is_idempotent(
-    name: str, url: str, description: str, type_tag: str, cost_tag: str, platform_tags: list[str]
+    name: str, url: str, description: str, type_tag: str, platform_tags: list[str]
 ) -> None:
-    line = build_entry_line(name, url, description, type_tag, cost_tag, platform_tags)
+    line = build_entry_line(name, url, description, type_tag, platform_tags)
     assert rebuild_entry_line(parse_entry_line(line)) == line
+
+
+def test_rebuild_of_legacy_bullet_drops_cost_tag() -> None:
+    # S4: an old committed line with `free` parses, and any rebuild (edit or
+    # resubmission path) emits it back WITHOUT the cost tag.
+    rebuilt = rebuild_entry_line(parse_entry_line(CANONICAL))
+    assert rebuilt == (
+        "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
+        "`type:tool` `linux`"
+    )
 
 
 def test_parse_entry_line_accepts_no_tags() -> None:
@@ -287,7 +300,7 @@ def test_parse_entry_line_accepts_no_tags() -> None:
 
 
 def test_parse_entry_line_hyphen_minus_separator_equals_em_dash_form() -> None:
-    em = build_entry_line("Amass", "https://a.dev", "Scanner", "tool", "free", ["linux"])
+    em = build_entry_line("Amass", "https://a.dev", "Scanner", "tool", ["linux"])
     hyphen = em.replace(") — ", ") - ")
     assert hyphen != em
     assert parse_entry_line(hyphen) == parse_entry_line(em)
@@ -362,23 +375,22 @@ def test_build_entry_line_known_output_unchanged_after_shared_validation_refacto
         "https://github.com/owasp-amass/amass",
         "Subdomain enumeration.",
         "tool",
-        "free",
         ["linux", "Windows", "linux", "docker"],
     ) == (
         "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
-        "`type:tool` `free` `linux` `Windows` `docker`"
+        "`type:tool` `linux` `Windows` `docker`"
     )
 
 
 def test_build_entry_line_error_messages_unchanged_after_shared_validation_refactor() -> None:
     with pytest.raises(ValueError) as name_err:
-        build_entry_line(" ", "https://a.dev", "D", "tool", "free")
+        build_entry_line(" ", "https://a.dev", "D", "tool")
     assert str(name_err.value) == "entry name must not be empty"
     with pytest.raises(ValueError) as url_err:
-        build_entry_line("N", "http://a.dev", "D", "tool", "free")
+        build_entry_line("N", "http://a.dev", "D", "tool")
     assert str(url_err.value) == "entry url must be an https:// URL"
     with pytest.raises(ValueError) as tag_err:
-        build_entry_line("N", "https://a.dev", "D", "tool", "free", ["bad tag"])
+        build_entry_line("N", "https://a.dev", "D", "tool", ["bad tag"])
     assert str(tag_err.value) == "invalid platform tag 'bad tag'"
 
 
@@ -547,14 +559,14 @@ def test_leaf_template_exact_text() -> None:
         "## Resources\n"
         "\n"
         "<!-- Format: - [Name](https://url) — what it does and why it matters. Tags: "
-        "`type:tool|course|docs|wordlist|lab|article|video` `free|paid|freemium` "
+        "`type:tool|course|docs|wordlist|lab|article|video` "
         "`platform or tech` -->\n"
     )
 
 
 def test_leaf_template_then_insert_resulting_exact_file_text() -> None:
     entry = build_entry_line(
-        "Amass", "https://github.com/owasp-amass/amass", "Subdomain enumeration", "tool", "free", ["linux"]
+        "Amass", "https://github.com/owasp-amass/amass", "Subdomain enumeration", "tool", ["linux"]
     )
     text, status = insert_entry(leaf_template("OSINT", "Open source intelligence resources."), entry)
     assert status == "inserted"
@@ -566,10 +578,10 @@ def test_leaf_template_then_insert_resulting_exact_file_text() -> None:
         "## Resources\n"
         "\n"
         "<!-- Format: - [Name](https://url) — what it does and why it matters. Tags: "
-        "`type:tool|course|docs|wordlist|lab|article|video` `free|paid|freemium` "
+        "`type:tool|course|docs|wordlist|lab|article|video` "
         "`platform or tech` -->\n"
         "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
-        "`type:tool` `free` `linux`\n"
+        "`type:tool` `linux`\n"
     )
 
 

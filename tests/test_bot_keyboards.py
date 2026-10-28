@@ -16,12 +16,11 @@ from app.bot.keyboards import (
     HELP_TEXT,
     candidates_kb,
     confirm_kb,
-    cost_kb,
     folders_kb,
     type_kb,
 )
 from app.services.decision import FolderCandidate
-from app.services.github import COST_TAGS, ENTRY_TYPES
+from app.services.github import ENTRY_TYPES
 
 FOLDERS = [
     "01_Recon/OSINT",
@@ -318,9 +317,11 @@ def test_type_kb_lists_allowed_types_only_as_direct_callbacks() -> None:
     assert cells == [(tag, tag) for tag in ENTRY_TYPES]
 
 
-def test_cost_kb_lists_allowed_costs_only() -> None:
-    cells = [c for row in _cells(cost_kb()) for c in row]
-    assert cells == [(tag, tag) for tag in COST_TAGS]
+def test_cost_keyboard_is_gone() -> None:
+    """S2: the cost keyboard no longer exists anywhere."""
+    import app.bot.keyboards as keyboards_module
+
+    assert not hasattr(keyboards_module, "cost_kb")
 
 
 def test_confirm_kb_labels_destination_folder() -> None:

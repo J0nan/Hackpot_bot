@@ -229,7 +229,7 @@ async def test_s2_description_paste_rebuilds_canonical_and_persists(h: dict) -> 
     result = await flow.handle_text(USER, "jonan", "A sharpened recon suite")
 
     expected = build_entry_line(
-        parsed.name, REVIEWED, "A sharpened recon suite", "tool", "free", ["linux"]
+        parsed.name, REVIEWED, "A sharpened recon suite", "tool", ["linux"]
     )
     assert await _entry_line(h, rid) == expected  # canonical format re-applied
     assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"
@@ -254,8 +254,9 @@ async def test_s2_tags_paste_rebuilds_canonical_and_persists(h: dict) -> None:
     await _press(flow, "t")
     result = await flow.handle_text(USER, "jonan", "`type:docs` `paid` `windows` `macos`")
 
+    # S4: the pasted legacy `paid` word is dropped by the builder.
     expected = build_entry_line(
-        parsed.name, REVIEWED, parsed.description, "docs", "paid", ["windows", "macos"]
+        parsed.name, REVIEWED, parsed.description, "docs", ["windows", "macos"]
     )
     assert await _entry_line(h, rid) == expected
     assert result.replies == (f"{PREVIEW}\n{expected}",)
@@ -264,9 +265,9 @@ async def test_s2_tags_paste_rebuilds_canonical_and_persists(h: dict) -> None:
 
 
 async def test_s2_parse_rebuild_roundtrip_matches_builder(h: dict) -> None:
-    line = build_entry_line("Nmap", "https://nmap.org", "Port scanner.", "tool", "free", ["linux"])
+    line = build_entry_line("Nmap", "https://nmap.org", "Port scanner.", "tool", ["linux"])
     parsed = parse_entry_line(line)
-    assert build_entry_line(parsed.name, parsed.url, parsed.description, "tool", "free", ["linux"]) == line
+    assert build_entry_line(parsed.name, parsed.url, parsed.description, "tool", ["linux"]) == line
 
 
 # ---------------------------------------------------------------- S3 / S6.3
@@ -298,7 +299,7 @@ async def test_s3_paste_can_never_reach_the_link_slot(h: dict) -> None:
 
     await _press(flow, "t")
     result = await flow.handle_text(USER, "jonan", "type:tool https://evil.example/x")
-    assert "cost" in result.replies[0]  # the colon-shaped tag is named and refused
+    assert "plain words" in result.replies[0]  # the colon-shaped tag is named and refused
     assert await _row_digest(h, rid) == before
 
 
@@ -350,7 +351,7 @@ async def test_s44_rejected_edits_each_specific_error_retry_and_no_change(h: dic
     tag_cases = {
         "free linux": "Missing type tag",
         "type:banana": "type tag must be one of",
-        "type:tool cost:nope": "cost",
+        "type:tool cost:nope": "plain words",
         "type:tool `ba|d`": "invalid platform tag",
         f"type:tool {'t' * 41}": "40 character limit",
     }
@@ -372,7 +373,7 @@ async def test_s44_retry_still_works_after_rejections_then_accepts(h: dict) -> N
     await flow.handle_text(USER, "jonan", "")
     ok = await flow.handle_text(USER, "jonan", "Now correct")
     assert isinstance(ok.keyboard, ConfirmKB)
-    expected = build_entry_line(parsed.name, REVIEWED, "Now correct", "tool", "free", ["linux"])
+    expected = build_entry_line(parsed.name, REVIEWED, "Now correct", "tool", ["linux"])
     assert await _entry_line(h, rid) == expected
     assert ok.delete_outgoing == ((CHAT, CARD),)
     assert pending_edits.get_marker(rid) is None
@@ -391,7 +392,8 @@ async def test_s45_confirm_after_edit_commits_the_edited_bullet_verbatim(h: dict
     await _press(flow, "t", message_id=CARD + 1)
     await flow.handle_text(USER, "jonan", "type:lab paid docker")
 
-    edited = build_entry_line(parsed.name, REVIEWED, "Edited description", "lab", "paid", ["docker"])
+    # S4: the pasted legacy `paid` word never survives into the committed bullet.
+    edited = build_entry_line(parsed.name, REVIEWED, "Edited description", "lab", ["docker"])
     await flow.handle_confirm(USER)
 
     commit_call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]

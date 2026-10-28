@@ -243,7 +243,7 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
         top MAX_CANDIDATES_SHOWN) + "📂 Other folder…" (every configured leaf, paged)
         │
         ▼
- entry interview: name → description → type → cost → platforms  (GitHub metadata prefilled)
+ entry interview: name → description → type → platforms  (GitHub metadata prefilled)
         │
         ▼
  preview of the exact bullet ──✅ Commit / ❌ Cancel──▶ GET leaf README sha → insert
@@ -271,14 +271,14 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
   lists every configured leaf, paged, so you can always override the decision. Arbitrary
   paths are never accepted.
 - **Answer the interview** — display name, one-line description (what it does and why it
-  matters), `type`, `cost`, optional platform tags. `none` skips platforms.
+  matters), `type`, optional platform tags. `none` skips platforms.
 - **Confirm** — the preview shows the exact bullet; ✅ commits to `TARGET_BRANCH`, ❌ or
   `/cancel` drops the resource without touching the repo.
 - **Edit one field before committing** — the confirmation carries two extra buttons
   on one row. **✏️ Description** sends the current description as a copyable code
   block: modify it (one line, no `[ ]` or backticks, at most 500 characters) and
   send it back. **🏷️ Tags** sends the current tag line: edit it on one line (the
-  first tag stays a `type:` tag, cost optional, platform tags follow the normal
+  first tag stays a `type:` tag, platform tags follow the normal
   tag rules) and send it back. Either way the bot keeps the name and the reviewed
   link byte-identical, re-applies the entry format, re-sends the confirmation and
   **deletes the previous confirmation message** — ✅ then commits the edited
@@ -299,11 +299,13 @@ Entry rules are those of the target repo (its `CONTRIBUTING.md`): one bullet per
 inside the leaf's `## Resources`, alphabetical by display name.
 
 ```markdown
-- [Name](https://canonical-url) — What it does and why it matters. `type:tool` `free` `linux`
+- [Name](https://canonical-url) — What it does and why it matters. `type:tool` `linux`
 ```
 
-Types are `tool|course|docs|wordlist|lab|article|video`, cost `free|paid|freemium`, plus
-optional platform tags. The bot inserts alphabetically, aborts a duplicate URL, and never
+Types are `tool|course|docs|wordlist|lab|article|video`, plus optional platform tags.
+A cost tag (`free`/`paid`/`freemium`) is no longer used — the bot never emits it, and a
+legacy cost word drops out of an entry the next time its description or tags are edited.
+The bot inserts alphabetically, aborts a duplicate URL, and never
 adds star counts or badges (the repo's CI appends those). A missing leaf README is created
 from the standard skeleton.
 
@@ -334,7 +336,7 @@ from the standard skeleton.
 | Path safety | The commit path is an exact `CATEGORIES_JSON` key + `/README.md`. Callback buttons carry a **strict canonical digit index** (`^\d+$`, ASCII only) into that list, so `c: 1`, `c:+1`, `c:01` or `c:١` are rejected exactly like `c:abc`. A tampered/stale database row whose folder is not configured is refused at confirm time (`commit_rejected` audit row, nothing committed, the resource stays reviewable). |
 | Input hygiene | URLs: https-only, no credentials, ≤ 2000 chars. Text: one-line sanitized (newlines, control/zero-width/bidi characters, HTML comment spans removed, length-capped). Names/descriptions containing `[`, `]` or a backtick are refused — the bullet-injection guard. |
 | Backpressure | `RATE_LIMIT_PER_MIN` per user; every HTTP call uses a 30 s timeout with at most 2 retries. The decision call announces itself before it starts. |
-| Container | `python:3.12-slim`, runs as non-root **UID 10001**, `read_only` rootfs, `cap_drop: ALL`, `no-new-privileges`, writable only at the `/app/data` named volume (plus a tmpfs `/tmp`). |
+| Container | `python:3.12-slim`, runs as non-root **UID/GID 586** (override with `--build-arg BOT_UID=… BOT_GID=…`; the host `./data` folder must be writable by that uid), `read_only` rootfs, `cap_drop: ALL`, `no-new-privileges`, writable only at the `/app/data` bind mount (plus a tmpfs `/tmp`). |
 | Errors | Users see short static wording; HTTP statuses, request IDs and internal details go to the audit table instead. |
 
 ---

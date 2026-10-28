@@ -93,7 +93,6 @@ def verified_response(
     *,
     choice: str | None = "02_Web_Application/Vulnerability_Specific",
     noul: float | None = 0.02,
-    cost: str | None = "free",
     request_id: str | None = "req-42",
 ) -> dict[str, Any]:
     """Canned response in the VERIFIED shape (ODD log entry L4)."""
@@ -104,13 +103,6 @@ def verified_response(
         folder["probabilities"] = probabilities
 
     answers: dict[str, Any] = {"folder": folder}
-    if cost is not None:
-        answers["cost"] = {
-            "type": "choice",
-            "choice": cost,
-            "confidence": 0.9,
-            "probabilities": {"free": 0.9, "paid": 0.05, "freemium": 0.05},
-        }
     if noul is not None:
         answers["needs_admin"] = {"type": "noul", "noul": noul}
 
@@ -176,7 +168,7 @@ def test_build_request_question_shape() -> None:
     assert request["state"] == {"ticket_id": TICKET, "content": CONTENT}
 
     questions = request["questions"]
-    assert set(questions) == {"folder", "cost", "needs_admin"}
+    assert set(questions) == {"folder", "needs_admin"}  # no cost question (S3)
 
     folder = questions["folder"]
     assert folder["type"] == "choice"
@@ -184,13 +176,6 @@ def test_build_request_question_shape() -> None:
     # criteria map keys must be exactly the configured leaf categories (S18).
     assert list(folder["criteria"].keys()) == list(CATEGORIES.keys())
     assert folder["criteria"] == CATEGORIES
-
-    cost = questions["cost"]
-    assert cost["type"] == "choice"
-    assert set(cost["criteria"]) == {"free", "paid", "freemium"}
-    for description in cost["criteria"].values():
-        assert isinstance(description, str) and description.strip()
-        assert "\n" not in description
 
     needs_admin = questions["needs_admin"]
     assert needs_admin["type"] == "noul"
@@ -407,7 +392,6 @@ async def test_classify_populates_audit_fields(make_client) -> None:
     result = await client.classify(TICKET, CONTENT, CATEGORIES, 0.15, 3)
 
     assert result.needs_admin == 0.02
-    assert result.cost == "free"
     assert result.request_id == "req-42"
     assert result.raw == payload
     assert result.raw["usage"] == {"input_tokens": 341}
@@ -415,13 +399,12 @@ async def test_classify_populates_audit_fields(make_client) -> None:
 
 async def test_classify_defaults_for_missing_optional_answers(make_client) -> None:
     recorder = Recorder()
-    payload = verified_response(PROBABILITIES, noul=None, cost=None, request_id=None)
+    payload = verified_response(PROBABILITIES, noul=None, request_id=None)
     client = make_client(scripted_handler([ok(payload)], recorder))
 
     result = await client.classify(TICKET, CONTENT, CATEGORIES, 0.15, 3)
 
     assert result.needs_admin is None
-    assert result.cost == ""
     assert result.request_id == ""
 
 
@@ -429,13 +412,13 @@ async def test_classify_garbled_optional_answers_are_tolerated(make_client) -> N
     recorder = Recorder()
     payload = verified_response(PROBABILITIES)
     payload["answers"]["needs_admin"] = {"type": "noul", "noul": "not-a-number"}
-    payload["answers"]["cost"] = {"type": "choice"}
+    payload["answers"]["cost"] = {"type": "choice", "choice": "free"}  # legacy answer: ignored
     client = make_client(scripted_handler([ok(payload)], recorder))
 
     result = await client.classify(TICKET, CONTENT, CATEGORIES, 0.15, 3)
 
     assert result.needs_admin is None
-    assert result.cost == ""
+    assert not hasattr(result, "cost")  # S3: cost is gone from the result
 
 
 @pytest.mark.parametrize(
@@ -484,10 +467,10 @@ def test_result_dataclasses_are_frozen() -> None:
         candidate.folder = "other"  # type: ignore[misc]
 
     result = ClassificationResult(
-        candidates=[candidate], needs_admin=None, cost="free", request_id="r", raw={}
+        candidates=[candidate], needs_admin=None, request_id="r", raw={}
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
-        result.cost = "paid"  # type: ignore[misc]
+        result.needs_admin = 0.5  # type: ignore[misc]
 
 
 # --------------------------------------------------------------------------- #
@@ -576,7 +559,7 @@ async def test_transport_error_then_success(make_client) -> None:
     result = await client.classify(TICKET, CONTENT, CATEGORIES, 0.15, 3)
 
     assert recorder.calls == 2
-    assert result.cost == "free"
+    assert result.needs_admin == 0.02
 
 
 async def test_invalid_json_raises_decision_error(make_client) -> None:

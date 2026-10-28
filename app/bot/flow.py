@@ -82,7 +82,7 @@ from app.security.sanitizers import sanitize_line, sanitize_url
 from app.security.token_store import decrypt_pat, encrypt_pat, looks_like_token, mask
 from app.services.decision import DecisionClient, DecisionError, FolderCandidate
 from app.services.github import (
-    COST_TAGS,
+    LEGACY_COST_TAGS,
     ENTRY_TYPES,
     DuplicateError,
     EntryLineError,
@@ -108,7 +108,7 @@ def _links_noun(count: int) -> str:
     return f"{count} {'link' if count == 1 else 'links'}"
 _NAME_MAX = 120
 _DESC_MAX = 500
-IV_FIELDS: tuple[str, ...] = ("name", "description", "type", "cost", "platforms")
+IV_FIELDS: tuple[str, ...] = ("name", "description", "type", "platforms")
 NEEDS_ADMIN_THRESHOLD = 0.5  # S7
 
 URL_RE = re.compile(r"https?://\S+")
@@ -192,7 +192,6 @@ ASK_DESCRIPTION = (
     "(no [ ] or backticks)."
 )
 ASK_TYPE = "Pick the type tag:"
-ASK_COST = "Pick the cost tag:"
 ASK_PLATFORMS = (
     "Optional platform/tech tags, space-separated (e.g. linux docker), "
     'or send "none".'
@@ -203,7 +202,6 @@ ASK_CONTEXT = (
 )
 INVALID_FIELD = "{label} can't contain [ ] or backticks — please re-send without them."
 INVALID_TYPE = f"Pick one of: {', '.join(ENTRY_TYPES)}."
-INVALID_COST = f"Pick one of: {', '.join(COST_TAGS)}."
 ENTRY_BUILD_FAILED = (
     "Some collected answers can't form a valid entry line — let's re-check them."
 )
@@ -239,8 +237,9 @@ EDIT_DESC_ASK = (
 )
 EDIT_TAGS_ASK = (
     "🏷️ Copy the tags below, edit them on one line (the first tag must stay a "
-    "`type:` tag, cost is optional), then send the new tags back. Nothing is "
-    "committed until you press ✅ — the buttons above stay usable meanwhile."
+    "`type:` tag, the rest are plain platform tags), then send the new tags "
+    "back. Nothing is committed until you press ✅ — the buttons above stay "
+    "usable meanwhile."
 )
 EDIT_DESC_ONE_LINE = "The description must be one line — send it again without line breaks."
 EDIT_DESC_EMPTY = "The description is empty — send the new description on one line."
@@ -257,10 +256,9 @@ EDIT_TYPE_VALUE = (
     + ", ".join(ENTRY_TYPES)
     + " — fix it and send the tags again."
 )
-EDIT_TAGS_COST = (
-    "The tag after `type:` must be a cost ("
-    + ", ".join(COST_TAGS)
-    + ") or a plain platform tag without ':' — send the tags again."
+EDIT_TAGS_COLON = (
+    "Platform tags must be plain words without ':' — only the first tag may "
+    "be a `type:` tag — fix it and send the tags again."
 )
 EDIT_UNAVAILABLE = "This entry can't be prepared for editing right now — use ✅ to commit or ❌ to cancel."
 EDIT_RETRY_DETAIL_MAX = 200  # cap for a validator-error line echoed back for retry
@@ -291,11 +289,6 @@ class TypeKB:
 
 
 @dataclass(frozen=True)
-class CostKB:
-    pass
-
-
-@dataclass(frozen=True)
 class ConfirmKB:
     folder: str
 
@@ -316,7 +309,7 @@ class FlowResult:
     """
 
     replies: tuple[str, ...] = ()
-    keyboard: CandidatesKB | FoldersKB | TypeKB | CostKB | ConfirmKB | None = None
+    keyboard: CandidatesKB | FoldersKB | TypeKB | ConfirmKB | None = None
     delete_message: bool = False
     new_message: bool = False
     parse_mode: str | None = None
@@ -537,8 +530,6 @@ class ResourceFlow:
             step = self._derive_step(active, iv)
             if step == "type" and data in ENTRY_TYPES:
                 return await self._answer_field(user_id, active, iv, "type", data)
-            if step == "cost" and data in COST_TAGS:
-                return await self._answer_field(user_id, active, iv, "cost", data)
         await self._log("callback_ignored", user_id, detail=f"data={data}")
         return FlowResult((UNKNOWN_CALLBACK,))
 
@@ -736,7 +727,6 @@ class ResourceFlow:
             confidence=top.probability if top else 0.0,
             probabilities={c.folder: c.probability for c in result.candidates},
             needs_admin=result.needs_admin,
-            cost_choice=result.cost,
             raw_json=result.raw,
         )
         await set_resource_state(self.deps.conn, resource.id, "AWAITING_PLACEMENT")
@@ -793,7 +783,7 @@ class ResourceFlow:
             await self._log("placement_rejected", user_id, resource.id, detail=f"folder={folder!r}")
             return FlowResult((UNKNOWN_FOLDER,))
 
-        decision = await self._latest_decision(resource.id)
+        needs_admin = await self._latest_needs_admin(resource.id)
         iv: dict[str, Any] = {}
         if resource.kind == "github":
             parsed = parse_repo_url(resource.url)
@@ -802,8 +792,6 @@ class ResourceFlow:
             lead = _first_paragraph(resource.context)
             if lead:
                 iv["description"] = lead
-        if decision and decision["cost_choice"] in COST_TAGS:
-            iv["cost"] = decision["cost_choice"]
 
         await set_resource_state(
             self.deps.conn,
@@ -816,23 +804,20 @@ class ResourceFlow:
         await self._log("placement_chosen", user_id, resource.id, detail=f"folder={folder}")
 
         replies: list[str] = []
-        needs_admin = decision["needs_admin"] if decision else None
         if needs_admin is not None and needs_admin >= NEEDS_ADMIN_THRESHOLD:  # S7
             replies.append(NEEDS_ADMIN_NOTE)
         replies.append(PLACED.format(folder=folder))
         next_step = await self._advance(user_id, resource.id)
         return FlowResult((*replies, *next_step.replies), next_step.keyboard)
 
-    async def _latest_decision(self, resource_id: int) -> dict[str, Any] | None:
-        """Newest decision row for needs_admin/cost recall across steps."""
+    async def _latest_needs_admin(self, resource_id: int) -> float | None:
+        """needs_admin of the newest decision row, for the S7 note across steps."""
         async with self.deps.conn.execute(
-            "SELECT needs_admin, cost_choice FROM decisions WHERE resource_id = ? ORDER BY id DESC LIMIT 1",
+            "SELECT needs_admin FROM decisions WHERE resource_id = ? ORDER BY id DESC LIMIT 1",
             (resource_id,),
         ) as cursor:
             row = await cursor.fetchone()
-        if row is None:
-            return None
-        return {"needs_admin": row["needs_admin"], "cost_choice": row["cost_choice"]}
+        return None if row is None else row["needs_admin"]
 
     # -- entry interview (S14, L7-1) ---------------------------------------------- #
 
@@ -851,7 +836,6 @@ class ResourceFlow:
         "name": (ASK_NAME, None),
         "description": (ASK_DESCRIPTION, None),
         "type": (ASK_TYPE, TypeKB()),
-        "cost": (ASK_COST, CostKB()),
         "platforms": (ASK_PLATFORMS, None),
         "folder": (PLACEMENT_HINT, None),
         "context": (ASK_CONTEXT, None),
@@ -880,12 +864,6 @@ class ResourceFlow:
                 await self._log("entry_rejected", user_id, resource.id, detail="field=type")
                 return FlowResult((INVALID_TYPE,), TypeKB())
             return await self._answer_field(user_id, resource, iv, "type", value)
-        if step == "cost":
-            value = raw.lower()
-            if value not in COST_TAGS:
-                await self._log("entry_rejected", user_id, resource.id, detail="field=cost")
-                return FlowResult((INVALID_COST,), CostKB())
-            return await self._answer_field(user_id, resource, iv, "cost", value)
         if step == "platforms":
             tokens = [t for t in _TOKEN_SPLIT_RE.split(raw) if t]
             if not tokens or tokens == ["none"]:
@@ -937,7 +915,6 @@ class ResourceFlow:
                 resource.url,
                 iv.get("description", ""),
                 iv.get("type", ""),
-                iv.get("cost", ""),
                 list(iv.get("platforms", [])),
             )
         except ValueError as exc:  # defensive: field names only, no echo of values
@@ -957,29 +934,27 @@ class ResourceFlow:
 
     def _entry_parts(
         self, resource: Any
-    ) -> tuple[Any, str, str, list[str]] | None:
-        """Rebuild pieces of the stored bullet: parsed fields + type/cost/tags.
+    ) -> tuple[Any, str, list[str]] | None:
+        """Rebuild pieces of the stored bullet: parsed fields + type/tags.
 
         ``parse_entry_line`` stays as internal plumbing (L9): it reads the
         current description and tags back out of the canonical ``entry_line``.
-        Returns None when the stored line cannot support an edit loop (a
-        hand-corrupted row, never a builder-produced one).
+        LEGACY cost words inside the tag run are dropped here, so any rebuild
+        emits a cost-free bullet (S4). Returns None when the stored line
+        cannot support an edit loop (a hand-corrupted row, never a
+        builder-produced one).
         """
         try:
             parsed = parse_entry_line(resource.entry_line)
         except EntryLineError:
             return None
-        # L5 rebuild mapping: tags[0] = "type:x", next only if a cost tag, rest
-        # are platform tags.
+        # L5 rebuild mapping: tags[0] = "type:x", the rest are platform tags.
         head = parsed.tags[0] if parsed.tags else ""
         kind, sep, type_tag = head.partition(":")
         if not sep or kind != "type" or type_tag not in ENTRY_TYPES:
             return None
-        platform_tags = list(parsed.tags[1:])
-        cost_tag = ""
-        if platform_tags and platform_tags[0] in COST_TAGS:
-            cost_tag = platform_tags.pop(0)
-        return parsed, type_tag, cost_tag, platform_tags
+        platform_tags = [t for t in parsed.tags[1:] if t not in LEGACY_COST_TAGS]
+        return parsed, type_tag, platform_tags
 
     @staticmethod
     def _edit_prompt(mode: str, parsed: Any) -> tuple[str, str]:
@@ -1012,7 +987,7 @@ class ResourceFlow:
         )
 
     def _rebuild_from_description(
-        self, resource: Any, parsed: Any, type_tag: str, cost_tag: str, platform_tags: list[str], text: str
+        self, resource: Any, parsed: Any, type_tag: str, platform_tags: list[str], text: str
     ) -> tuple[str | None, str | None]:
         """S6.3: the pasted line is a DESCRIPTION only (interview guard reused)."""
         stripped = (text or "").strip()
@@ -1027,7 +1002,7 @@ class ResourceFlow:
             return None, EDIT_DESC_TOO_LONG
         try:
             new_line = build_entry_line(
-                parsed.name, resource.url, value, type_tag, cost_tag, platform_tags
+                parsed.name, resource.url, value, type_tag, platform_tags
             )
         except ValueError as exc:  # defensive: validators above already applied the caps
             return None, _html_escape(sanitize_line(str(exc), EDIT_RETRY_DETAIL_MAX))
@@ -1046,15 +1021,11 @@ class ResourceFlow:
         if type_tag not in ENTRY_TYPES:
             return None, EDIT_TYPE_VALUE
         rest = tokens[1:]
-        cost_tag = ""
-        if rest and rest[0] in COST_TAGS:
-            cost_tag = rest[0]
-            rest = rest[1:]
-        if any(":" in tag for tag in rest):  # stray key:value = bad cost attempt
-            return None, EDIT_TAGS_COST
+        if any(":" in tag for tag in rest):  # only the head may be a `type:` tag
+            return None, EDIT_TAGS_COLON
         try:
             new_line = build_entry_line(
-                parsed.name, resource.url, parsed.description, type_tag, cost_tag, rest
+                parsed.name, resource.url, parsed.description, type_tag, rest
             )
         except ValueError as exc:  # _normalize_platform_tags messages name the tag
             return None, _html_escape(sanitize_line(str(exc), EDIT_RETRY_DETAIL_MAX))
@@ -1083,12 +1054,12 @@ class ResourceFlow:
                 "entry_edit_rejected", user_id, resource.id, detail="reason=unrebuildable-entry"
             )
             return FlowResult((EDIT_UNAVAILABLE,), parse_mode=PARSE_HTML)
-        parsed, type_tag, cost_tag, platform_tags = parts
+        parsed, type_tag, platform_tags = parts
         if marker.mode == pending_edits.TAGS:
             new_line, error = self._rebuild_from_tags(resource, parsed, text)
         else:
             new_line, error = self._rebuild_from_description(
-                resource, parsed, type_tag, cost_tag, platform_tags, text
+                resource, parsed, type_tag, platform_tags, text
             )
         if error is not None:
             await self._log(

@@ -9,9 +9,10 @@ verified against the live service (ODD log entry L4):
     body: {"model": ..., "state": {"ticket_id", "content"}, "questions": {...}}
 
 Everything the bot shows as a placement candidate comes from
-``answers.folder.probabilities`` (S7); ``answers.cost.choice`` and
-``answers.needs_admin.noul`` come from the same call, so there is no second
-round-trip for cost.
+``answers.folder.probabilities`` (S7); ``answers.needs_admin.noul`` comes from
+the same call. The model used to answer a cost question too — that question is
+retired (remove-cost-tag S3): a stray ``answers.cost`` in a response is simply
+ignored.
 
 Security rules for this module (S12):
   * the API key is held as ``SecretStr`` and is never placed in an exception
@@ -46,23 +47,14 @@ __all__ = [
 
 # Question identifiers used in the request and parsed back from the response.
 FOLDER_QUESTION = "folder"
-COST_QUESTION = "cost"
 ADMIN_QUESTION = "needs_admin"
 
 # Verbatim wording sent to the model (kept here so tests can pin it).
 FOLDER_INSTRUCTIONS = "Which Hackpot leaf category should this resource go into?"
-COST_INSTRUCTIONS = "What does this resource cost someone who wants to use it today?"
 ADMIN_INSTRUCTIONS = (
     "Is this resource sensitive or unusual enough that a human admin should "
     "double-check the placement?"
 )
-
-# Cost is a fixed 3-option choice (S13 tag vocabulary); one line per option.
-COST_CRITERIA: dict[str, str] = {
-    "free": "No money required: fully free, open-source, or public without a paywall.",
-    "paid": "Payment or paid subscription is required to use the core resource.",
-    "freemium": "A free tier exists, but meaningful capability needs payment.",
-}
 
 # Hard cap on the state content we are willing to send (model limit is far
 # larger: 65536 tokens); callers may pass a smaller cap.
@@ -111,7 +103,6 @@ class ClassificationResult:
 
     candidates: list[FolderCandidate]
     needs_admin: float | None
-    cost: str
     request_id: str
     raw: dict
 
@@ -160,11 +151,6 @@ def build_request(
                 "type": "choice",
                 "instructions": FOLDER_INSTRUCTIONS,
                 "criteria": criteria,
-            },
-            COST_QUESTION: {
-                "type": "choice",
-                "instructions": COST_INSTRUCTIONS,
-                "criteria": dict(COST_CRITERIA),
             },
             ADMIN_QUESTION: {
                 "type": "noul",
@@ -230,19 +216,13 @@ def _parse_classification(
         _number(admin_answer.get("noul")) if isinstance(admin_answer, Mapping) else None
     )
 
-    cost_answer = answers.get(COST_QUESTION)
-    cost = ""
-    if isinstance(cost_answer, Mapping):
-        raw_cost = cost_answer.get("choice")
-        cost = raw_cost if isinstance(raw_cost, str) else ""
-
+    # A legacy "cost" answer may still arrive from the model: ignored (S3).
     raw_request_id = data.get("request_id")
     request_id = raw_request_id if isinstance(raw_request_id, str) else ""
 
     return ClassificationResult(
         candidates=candidates,
         needs_admin=needs_admin,
-        cost=cost,
         request_id=request_id,
         raw=data,
     )

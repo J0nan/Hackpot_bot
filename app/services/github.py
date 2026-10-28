@@ -31,8 +31,10 @@ logger = get_logger(__name__)
 
 #: Allowed `type:` tags (J0nan/Hackpot CONTRIBUTING.md).
 ENTRY_TYPES: tuple[str, ...] = ("tool", "course", "docs", "wordlist", "lab", "article", "video")
-#: Allowed cost tags.
-COST_TAGS: tuple[str, ...] = ("free", "paid", "freemium")
+#: Cost tags the repo used to carry (S13 history). They are LEGACY ONLY: the
+#: bot never asks or emits them, and build strips them from platform tags so
+#: an old bullet that resurfaces through an edit loses the cost word (S4).
+LEGACY_COST_TAGS: tuple[str, ...] = ("free", "paid", "freemium")
 #: Separator between display name, link and description in a bullet.
 EM_DASH = "—"
 #: Heading of the section every bullet lives under.
@@ -216,23 +218,21 @@ def build_entry_line(
     url: str,
     description: str,
     type_tag: str,
-    cost_tag: str = "",
     platform_tags: list[str] | None = None,
 ) -> str:
-    """Build one S13 bullet: `- [Name](url) — Description. `type:tool` `free` `linux``."""
+    """Build one S13 bullet: `- [Name](url) — Description. `type:tool` `linux``."""
     display = _one_line(name, "name", MAX_NAME_LEN)
     summary = _one_line(description, "description", MAX_DESCRIPTION_LEN)
     link = _normalize_url(url)
     if type_tag not in ENTRY_TYPES:
         raise ValueError(f"invalid type tag {type_tag!r}: expected one of {', '.join(ENTRY_TYPES)}")
-    cost = (cost_tag or "").strip()
-    if cost and cost not in COST_TAGS:
-        raise ValueError(f"invalid cost tag {cost!r}: expected one of {', '.join(COST_TAGS)}")
 
+    # No cost tag is ever emitted; legacy cost words inside platform tags are
+    # dropped silently (S4: an old bullet rebuilds without cost, never errors).
     tags: list[str] = [f"type:{type_tag}"]
-    if cost:
-        tags.append(cost)
-    tags.extend(_normalize_platform_tags(platform_tags))
+    tags.extend(
+        tag for tag in _normalize_platform_tags(platform_tags) if tag not in LEGACY_COST_TAGS
+    )
 
     # "strips trailing punctuation from description then appends `.`"
     sentence = summary.rstrip(".,;:!?").rstrip() or summary
@@ -358,7 +358,7 @@ def leaf_template(title: str, description: str) -> str:
     return (
         f"# {title}\n\n{description}\n\n{RESOURCES_HEADING}\n\n"
         "<!-- Format: - [Name](https://url) — what it does and why it matters. Tags: "
-        "`type:tool|course|docs|wordlist|lab|article|video` `free|paid|freemium` "
+        "`type:tool|course|docs|wordlist|lab|article|video` "
         "`platform or tech` -->\n"
     )
 

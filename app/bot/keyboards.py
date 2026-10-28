@@ -18,7 +18,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.folder_picker import PAGE_SIZE, count_pages, keycap, page_slice
 from app.services.decision import FolderCandidate
-from app.services.github import COST_TAGS, ENTRY_TYPES
+from app.services.github import ENTRY_TYPES
 
 OTHER_FOLDERS_LABEL = "📂 Other folder…"
 BACK_LABEL = "⬅️ Back"
@@ -130,11 +130,6 @@ def type_kb() -> InlineKeyboardMarkup:
         [_button(tag, tag) for tag in ENTRY_TYPES[offset : offset + 3]]
         for offset in range(0, len(ENTRY_TYPES), 3)
     ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def cost_kb() -> InlineKeyboardMarkup:
-    rows = [[_button(tag, tag) for tag in COST_TAGS]]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

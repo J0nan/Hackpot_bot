@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from app.bot import handlers, pending_edits
-from app.bot.flow import (ASK_COST, INVALID_FIELD, UNKNOWN_FOLDER,
+from app.bot.flow import (ASK_PLATFORMS, INVALID_FIELD, UNKNOWN_FOLDER,
                           AppDeps, ResourceFlow, make_github_factory)
 from app.config import Settings
 from app.db.database import open_db
@@ -28,7 +28,7 @@ from app.security.token_store import decrypt_pat, encrypt_pat
 UID, UNAME, EVIL_ID = 1001, "alice", 666
 TOKEN = "ghp_ZZZVERIFYPATTOKEN1234567890abcdefXYZ"
 LEAF = "02_Web_Application/Vulnerability_Specific"
-BULLET = "- [X](https://example.com/x) — d. `type:tool` `free`"
+BULLET = "- [X](https://example.com/x) — d. `type:tool` `free`"  # LEGACY shape (S4)
 
 CATEGORIES = {"01_Recon/Tools": "recon", LEAF: "web", "03_Crypto/Wordlists": "crypto"}
 
@@ -182,7 +182,8 @@ async def test_edited_bullet_commits_only_to_validated_folder(env):  # T4 S4.5/S
 
     await flow.handle_callback(UID, UNAME, "d")  # ✏️ Description press
     await flow.handle_text(UID, UNAME, "Sharpened description")  # the paste-back
-    edited = "- [X](https://example.com/x) — Sharpened description. `type:tool` `free`"
+    # S4: the rebuild drops the LEGACY `free` word stored in BULLET.
+    edited = "- [X](https://example.com/x) — Sharpened description. `type:tool`"
     assert (await get_resource(deps.conn, r)).entry_line == edited
 
     await ResourceFlow(deps).handle_confirm(UID)
@@ -286,7 +287,7 @@ async def test_resume_mid_interview_on_fresh_flow(env):  # S10
     await set_resource_state(deps.conn, r, "AWAITING_ENTRY_INFO", folder=LEAF, context="c",
                              entry_line=json.dumps({"name": "n", "description": "d"}, sort_keys=True))
     fresh = ResourceFlow(deps)  # simulate a restarted process
-    assert (await fresh.handle_text(UID, UNAME, "tool")).replies == (ASK_COST,)
+    assert (await fresh.handle_text(UID, UNAME, "tool")).replies == (ASK_PLATFORMS,)
     assert json.loads((await get_resource(deps.conn, r)).entry_line)["type"] == "tool"
 
 

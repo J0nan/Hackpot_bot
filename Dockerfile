@@ -4,8 +4,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-RUN groupadd --gid 10001 hackpot \
-    && useradd --uid 10001 --gid hackpot --home-dir /app --shell /usr/sbin/nologin hackpot
+# Host folder ownership decides write access for the ./data bind mount;
+# default matches the host uid/gid this bot runs under (override: --build-arg).
+ARG BOT_UID=586
+ARG BOT_GID=586
+
+RUN groupadd --gid ${BOT_GID} hackpot \
+    && useradd --uid ${BOT_UID} --gid hackpot --home-dir /app --shell /usr/sbin/nologin hackpot
 
 WORKDIR /app
 
@@ -16,9 +21,9 @@ RUN pip install --no-cache-dir . \
     && mkdir -p /app/data \
     && chown -R hackpot:hackpot /app/data
 
-USER 10001:10001
+USER ${BOT_UID}:${BOT_GID}
 
-# SQLite + encrypted token store live here; mount as a named volume.
+# SQLite + encrypted token store live here; bind-mount the host ./data there.
 ENV DB_PATH=/app/data/hackpot.sqlite3
 VOLUME ["/app/data"]
 

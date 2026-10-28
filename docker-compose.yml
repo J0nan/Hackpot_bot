@@ -12,7 +12,4 @@ services:
     security_opt:
       - no-new-privileges:true
     volumes:
-      - hackpot-data:/app/data
-
-volumes:
-  hackpot-data:
+      - ./data:/app/data

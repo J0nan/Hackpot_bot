@@ -26,7 +26,6 @@ from app.bot.flow import (
     CONFIRMING_HINT,
     CandidatesKB,
     ConfirmKB,
-    CostKB,
     FoldersKB,
     PREVIEW,
     ResourceFlow,
@@ -127,7 +126,6 @@ class FakeDecision:
                 FolderCandidate(FOLDERS[0], 0.2, False),
             ],
             needs_admin=0.75,
-            cost="free",
             request_id="req-1",
             raw={"answers": {"folder": {"choice": CHOSEN}}},
         )
@@ -219,7 +217,7 @@ async def _to_placement(h: dict) -> ResourceFlow:
 async def _to_confirming(h: dict) -> tuple[ResourceFlow, Any]:
     flow = await _to_placement(h)
     await flow.handle_folder_choice(USER, CHOSEN)
-    # github kind pre-fills name/description from repo meta, cost from decision
+    # github kind pre-fills name/description from repo meta (no cost step: S2)
     await flow.handle_callback(USER, "jonan", "tool")  # type step
     result = await flow.handle_text(USER, "jonan", "linux")  # platforms -> preview
     return flow, result
@@ -366,7 +364,7 @@ async def test_github_url_fetches_readme_then_classifies_into_candidates(h: dict
         row = dict(await cur.fetchone())
     assert json.loads(row["probabilities_json"]) == {CHOSEN: 0.75, FOLDERS[0]: 0.2}
     assert row["needs_admin"] == 0.75
-    assert row["cost_choice"] == "free"
+    assert row["cost_choice"] == ""  # S3: cost is never written to new decisions
     assert row["request_id"] == "req-1"
     assert row["folder_choice"] == CHOSEN
     assert json.loads(row["raw_json"]) == {"answers": {"folder": {"choice": CHOSEN}}}
@@ -449,7 +447,6 @@ async def test_folder_choice_without_needs_admin_note(h: dict) -> None:
     h["decision"].result = ClassificationResult(
         candidates=[FolderCandidate(CHOSEN, 0.75, True)],
         needs_admin=0.2,
-        cost="free",
         request_id="req-2",
         raw={},
     )
@@ -528,16 +525,17 @@ async def test_interview_step_derivation_and_bracket_rejection(h: dict) -> None:
     assert isinstance(result.keyboard, TypeKB)
 
     await flow.handle_callback(USER, "jonan", "tool")
-    result = await flow.handle_callback(USER, "jonan", "freemium")
-    assert isinstance(result.keyboard, CostKB) or "platform" in "\n".join(result.replies).lower()
+    result = await flow.handle_callback(USER, "jonan", "freemium")  # cost button gone (S2)
+    assert result.replies == (UNKNOWN_CALLBACK,)  # ignored, audited, not an error state
+    assert await _audit(h, "callback_ignored")
 
     result = await flow.handle_text(USER, "jonan", "linux")
     assert isinstance(result.keyboard, ConfirmKB)
     resource = await get_resource(h["conn"], await _active_id(h))
     assert resource.state == "CONFIRMING"
     assert resource.entry_line == (
-        "- [SQLMap](https://cool-labs.io/tool) \u2014 Dumps database banners. "
-        "`type:tool` `freemium` `linux`"
+        "- [SQLMap](https://cool-labs.io/tool) — Dumps database banners. "
+        "`type:tool` `linux`"
     )
 
 
@@ -665,7 +663,7 @@ CARD_MSG_ID = 90042
 
 
 def _current_bullet(
-    desc: str = "A tool for things", tags: str = "`type:tool` `free` `linux`"
+    desc: str = "A tool for things", tags: str = "`type:tool` `linux`"
 ) -> str:
     return f"- [awesome-tool]({GITHUB_URL}) — {desc}. {tags}"
 
@@ -703,7 +701,7 @@ async def test_tags_press_replies_current_tags_and_replaces_the_marker(h: dict) 
         USER, "jonan", "t", chat_id=CHAT_ID, message_id=CARD_MSG_ID + 7
     )
 
-    assert result.replies[1] == "<pre>`type:tool` `free` `linux`</pre>"
+    assert result.replies[1] == "<pre>`type:tool` `linux`</pre>"
     assert "tags" in result.replies[0].lower()
     marker = pending_edits.get_marker(rid)
     assert marker is not None and marker.mode == "tags"
@@ -768,7 +766,8 @@ async def test_tags_paste_rebuilds_keeping_name_url_description(h: dict) -> None
 
     result = await flow.handle_text(USER, "jonan", "`type:docs` `paid` `windows` `macos`")
 
-    expected = _current_bullet(tags="`type:docs` `paid` `windows` `macos`")
+    # S4: the pasted legacy `paid` word is dropped; the rebuild is cost-free.
+    expected = _current_bullet(tags="`type:docs` `windows` `macos`")
     assert (await get_resource(h["conn"], rid)).entry_line == expected
     assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert result.delete_outgoing == ((CHAT_ID, CARD_MSG_ID),)
@@ -786,7 +785,7 @@ DESCRIPTION_REJECTIONS: list[tuple[str, str]] = [
 TAGS_REJECTIONS: list[tuple[str, str]] = [
     ("free linux", "Missing type tag"),
     ("type:banana free", "type tag must be one of"),
-    ("type:tool cost:premium linux", "cost"),
+    ("type:tool cost:premium linux", "plain words"),
     ("type:tool `ba|d`", "invalid platform tag"),
     ("type:tool " + "t" * 41, "40 character limit"),
 ]
@@ -825,7 +824,7 @@ async def test_tags_rejections_answer_one_error_and_persist_nothing(
 
     assert len(result.replies) == 3
     assert needle in result.replies[0], result.replies[0]
-    assert result.replies[-1] == "<pre>`type:tool` `free` `linux`</pre>"
+    assert result.replies[-1] == "<pre>`type:tool` `linux`</pre>"
     assert result.delete_outgoing == ()
     resource = await get_resource(h["conn"], rid)
     assert resource.state == "CONFIRMING" and resource.entry_line == _current_bullet()
@@ -841,6 +840,7 @@ async def test_tags_paste_duplicate_tags_are_deduped_by_the_existing_rule(h: dic
 
     result = await flow.handle_text(USER, "jonan", "type:tool free linux linux")
 
+    # S4: the legacy `free` word is dropped, linux dedupes, no error.
     assert (await get_resource(h["conn"], rid)).entry_line == _current_bullet()
     assert result.replies == (f"{PREVIEW}\n{_current_bullet()}",)
     assert result.delete_outgoing == ((CHAT_ID, CARD_MSG_ID),)
@@ -870,7 +870,8 @@ async def test_description_then_tags_then_confirm_commits_edited_bullet(h: dict)
     await flow.handle_callback(USER, "jonan", "t", chat_id=CHAT_ID, message_id=CARD_MSG_ID + 1)
     await flow.handle_text(USER, "jonan", "type:lab paid docker")
 
-    expected = _current_bullet("Edited description", tags="`type:lab` `paid` `docker`")
+    # S4: `paid` is a legacy word and never survives into the rebuilt bullet.
+    expected = _current_bullet("Edited description", tags="`type:lab` `docker`")
     assert (await get_resource(h["conn"], rid)).entry_line == expected
 
     await flow.handle_confirm(USER)
@@ -903,9 +904,10 @@ async def test_description_edit_preserves_unicode_and_em_dash_name(h: dict) -> N
     assert result.replies[1] == "<pre>Descripción con ñ</pre>"
 
     await flow.handle_text(USER, "jonan", "Nueva descripción")
+    # S4: the LEGACY `free` word stored in the old bullet is dropped on rebuild.
     assert (await get_resource(h["conn"], rid)).entry_line == (
         "- [Ñom — Special](https://github.com/OtherOrg/awesome-tool) — "
-        "Nueva descripción. `type:tool` `free`"
+        "Nueva descripción. `type:tool`"
     )
 
 
@@ -1175,7 +1177,7 @@ async def test_handler_deletes_nothing_on_rejected_edit(h: dict) -> None:
     paste = FakeMessage(USER, "jonan", "free linux")
     await handlers.on_text(paste, h["deps"], flow)
     assert paste.bot.deleted == []
-    assert paste.answers[-1] == "<pre>`type:tool` `free` `linux`</pre>"
+    assert paste.answers[-1] == "<pre>`type:tool` `linux`</pre>"
     assert paste.parse_modes[-1] == "HTML"  # renders as a copyable code block
     assert len(paste.answers) == 3  # exactly one error, then the re-offered prompt
 
@@ -1358,9 +1360,10 @@ async def test_stats_cuts_board_at_ten_and_shows_caller_rank(h: dict) -> None:
 
 
 async def test_stats_tag_board_counts_committed_tags(h: dict) -> None:
-    line_a = build_entry_line("Tool A", "https://t.example/1", "does things", "tool", "free", ["linux", "web"])
-    line_b = build_entry_line("Tool B", "https://t.example/2", "does more", "tool", "paid", ["web"])
-    line_c = build_entry_line("Tool C", "https://t.example/3", "more still", "tool", "free", ["Linux"])
+    line_a = build_entry_line("Tool A", "https://t.example/1", "does things", "tool", ["linux", "web"])
+    line_b = build_entry_line("Tool B", "https://t.example/2", "does more", "tool", ["web"])
+    # a LEGACY cost word pasted as a platform tag is dropped by the builder (S1)
+    line_c = build_entry_line("Tool C", "https://t.example/3", "more still", "tool", ["free", "Linux"])
     await _seed_for(h, 200, "ana", "https://t.example/1", "COMMITTED", entry_line=line_a)
     await _seed_for(h, 300, "bob", "https://t.example/2", "COMMITTED", entry_line=line_b)
     await _seed_for(h, 400, "cid", "https://t.example/3", "COMMITTED", entry_line=line_c)
@@ -1368,13 +1371,12 @@ async def test_stats_tag_board_counts_committed_tags(h: dict) -> None:
 
     text = (await h["flow"].handle_stats(USER, "jonan")).replies[1]
     assert "🏷️" in text
-    # type/cost tags count too; ties break alphabetically; case-insensitive dedupe
+    # type tags count too; ties break alphabetically; case-insensitive dedupe
     assert "🥇 type:tool — 3 links" in text
-    assert "🥈 free — 2 links" in text
-    assert "🥉 linux — 2 links" in text  # "Linux" folded into "linux", first spelling shown
-    assert "4. web — 2 links" in text
-    assert text.index("free") < text.index("linux") < text.index("web")  # a < l < w
-    assert "Linux" not in text  # one display spelling per tag, not two rows
+    assert "🥈 linux — 2 links" in text  # "Linux" folded into "linux"
+    assert "🥉 web — 2 links" in text
+    assert "free" not in text and "Linux" not in text  # legacy cost never emitted, one spelling
+    assert text.index("linux") < text.index("web")  # l < w
 
 
 async def test_stats_tag_board_survives_a_tampered_entry_line(h: dict) -> None:
@@ -1398,7 +1400,7 @@ async def test_stats_does_not_disturb_the_active_flow(h: dict) -> None:
 
 
 async def test_cmd_stats_handler_sends_both_boards(h: dict) -> None:
-    line = build_entry_line("Tool A", GITHUB_URL, "does things", "tool", "free", ["linux"])
+    line = build_entry_line("Tool A", GITHUB_URL, "does things", "tool", ["linux"])
     await _seed_for(h, USER, "jonan", GITHUB_URL, "COMMITTED", entry_line=line)
     message = FakeMessage(USER, "jonan", "/stats")
 

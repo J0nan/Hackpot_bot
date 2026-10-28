@@ -95,7 +95,6 @@ class FakeDecision:
         self.result = ClassificationResult(
             candidates=[FolderCandidate(CHOSEN, 0.9, True), FolderCandidate(FOLDERS[0], 0.1, False)],
             needs_admin=0.9,
-            cost="free",
             request_id="req-9",
             raw={},
         )
@@ -182,7 +181,7 @@ async def _press(h, data, chat_id=CHAT, message_id=CARD):
 async def _craft(h, rid, name=UNI_NAME, desc=UNI_DESC, platforms=("linux",)):
     await set_resource_state(
         h["conn"], rid, "CONFIRMING",
-        entry_line=build_entry_line(name, URL, desc, "tool", "free", list(platforms)),
+        entry_line=build_entry_line(name, URL, desc, "tool", list(platforms)),
     )
 
 
@@ -344,7 +343,7 @@ async def test_v3_code_block_shows_current_description_and_tags_exactly(h):
     d = await _press(h, "d")
     assert d.replies[1] == f"<pre>{UNI_DESC}</pre>"
     t = await _press(h, "t")
-    assert t.replies[1] == "<pre>`type:tool` `free` `linux`</pre>"
+    assert t.replies[1] == "<pre>`type:tool` `linux`</pre>"
 
 
 async def test_v3_extraction_survives_hyphens_inside_description(h):
@@ -373,7 +372,7 @@ async def test_v4_description_edit_rebuild_is_canonical_and_byte_faithful(h):
     await _craft(h, rid)
     await _press(h, "d")
     result = await h["flow"].handle_text(USER, "verifier", "A sharpened probe description")
-    expected = build_entry_line(UNI_NAME, URL, "A sharpened probe description", "tool", "free", ["linux"])
+    expected = build_entry_line(UNI_NAME, URL, "A sharpened probe description", "tool", ["linux"])
     assert await _line(h, rid) == expected  # persisted == independent rebuild
     assert result.replies == (f"{PREVIEW}\n{expected}",)  # confirmation re-sent
     assert isinstance(result.keyboard, ConfirmKB) and result.keyboard.folder == CHOSEN
@@ -399,7 +398,7 @@ async def test_v4_url_in_description_stays_out_of_the_link_slot(h):
     await _press(h, "d")
     await h["flow"].handle_text(USER, "verifier", paste)
     line = await _line(h, rid)
-    expected = build_entry_line(parsed.name, URL, paste, "tool", "free", ["linux"])
+    expected = build_entry_line(parsed.name, URL, paste, "tool", ["linux"])
     assert line == expected  # link slot = reviewed resource.url, paste only in text
     assert f"]({URL})" in line
 
@@ -409,7 +408,8 @@ async def test_v4_tags_edit_keeps_name_url_description(h):
     await _craft(h, rid)
     await _press(h, "t")
     result = await h["flow"].handle_text(USER, "verifier", "type:lab paid docker")
-    expected = build_entry_line(UNI_NAME, URL, UNI_DESC, "lab", "paid", ["docker"])
+    # S4: the pasted legacy `paid` word is dropped; the edit keeps name/url/desc.
+    expected = build_entry_line(UNI_NAME, URL, UNI_DESC, "lab", ["docker"])
     assert await _line(h, rid) == expected
     assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert isinstance(result.keyboard, ConfirmKB)
@@ -529,7 +529,7 @@ async def test_v6_d_then_t_sequence_round_trips(h):
     assert second.delete_outgoing == ((111, 11),)
     line = await _line(h, rid)
     assert "Round one description" in line
-    assert "`type:tool` `paid` `docker`" in line
+    assert "`type:tool` `docker`" in line  # S4: pasted `paid` is a legacy word, dropped
 
 
 async def test_v6_repeated_edits_delete_exactly_one_card_each(h):
@@ -579,7 +579,7 @@ async def test_v7_tags_rejections_specific_retry_byte_identical(h):
     cases = {
         "free linux": "Missing type tag",
         "type:banana": "must be one of",
-        "type:tool cost:premium": "must be a cost",
+        "type:tool cost:premium": "plain words",
         "type:tool " + "a" * 41: "40 character limit",
         "type:tool ba|d": "invalid platform tag",
         "": "Missing type tag",
@@ -588,7 +588,7 @@ async def test_v7_tags_rejections_specific_retry_byte_identical(h):
         result = await h["flow"].handle_text(USER, "verifier", paste)
         assert len(result.replies) == 3, paste
         assert needle in result.replies[0], (paste, result.replies[0])
-        assert result.replies[-1] == "<pre>`type:tool` `free` `linux`</pre>", paste
+        assert result.replies[-1] == "<pre>`type:tool` `linux`</pre>", paste
         assert result.delete_outgoing == (), paste
         assert result.keyboard is None, paste
         assert await _digest(h, rid) == before, paste  # row byte-identical
@@ -617,7 +617,7 @@ async def test_v7_duplicate_tags_are_deduped_and_accepted(h):
     parsed = parse_entry_line(stored)
     await _press(h, "t")
     result = await h["flow"].handle_text(USER, "verifier", "type:tool free linux linux linux")
-    expected = build_entry_line(parsed.name, URL, parsed.description, "tool", "free", ["linux"])
+    expected = build_entry_line(parsed.name, URL, parsed.description, "tool", ["linux"])
     assert await _line(h, rid) == expected  # byte-identical rebuild (S6.4 dedupe)
     assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert result.delete_outgoing == ((CHAT, CARD),)
@@ -633,7 +633,7 @@ async def test_v8_edited_entry_committed_verbatim(h):
     await h["flow"].handle_text(USER, "verifier", "Final edited description")
     await _press(h, "t")
     await h["flow"].handle_text(USER, "verifier", "type:lab paid docker")
-    expected = build_entry_line(UNI_NAME, URL, "Final edited description", "lab", "paid", ["docker"])
+    expected = build_entry_line(UNI_NAME, URL, "Final edited description", "lab", ["docker"])
     assert await _line(h, rid) == expected
     await h["flow"].handle_confirm(USER)
     call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]
