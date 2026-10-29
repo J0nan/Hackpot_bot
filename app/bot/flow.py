@@ -139,13 +139,13 @@ def _transition(resource_id: Any, old: str, new: str) -> None:
 SLOW_DOWN = "You are sending too fast — please slow down and try again in a minute."
 ASK_PAT_START = (
     "👋 Welcome, Hackpoter! First, send me your GitHub Personal Access Token "
-    "as one bare message."
+    "as one bare message.\n"
     "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
     "Set the following:\n"
-    "    - Expiration to `No expiration`." 
-    "    - Select `Only selected repositories` and choose the `Hackpot` repo on the Repository access.\n"
-    "    - Under `Repository permissions`, select `Contents: Read and write`.\n"
-    "Generate the token, copy it, and send it to me as one bare message."
+    "    - Expiration to 'No expiration'.\n" 
+    "    - Select 'Only selected repositories' and choose the 'Hackpot' repo on the Repository access.\n"
+    "    - Under 'Repository permissions', select 'Add permissions' then add 'Contents' and set it to 'Read and write'.\n\n"
+    "Generate the token, copy it, and send it to me as one bare message.\n"
     "I will store it encrypted. It is used to commit the resource under your own GitHub account."
 )
 GREETING_READY = (
@@ -163,12 +163,12 @@ PAT_STILL_NEEDED = (
 )
 NEED_TOKEN_FOR_LINK = (
     "Before I can index that link, send me your GitHub Personal Access Token.\n"
-     "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
+    "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
     "Set the following:\n"
-    "    - Expiration to `No expiration`.\n" 
-    "    - Select `Only selected repositories` and choose the `Hackpot` repo on the Repository access.\n"
-    "    - Under `Repository permissions`, select `Contents: Read and write`.\n\n"
-    "Generate the token, copy it, and send it to me as one bare message."
+    "    - Expiration to 'No expiration'.\n" 
+    "    - Select 'Only selected repositories' and choose the 'Hackpot' repo on the Repository access.\n"
+    "    - Under 'Repository permissions', select 'Add permissions' then add 'Contents' and set it to 'Read and write'.\n\n"
+    "Generate the token, copy it, and send it to me as one bare message.\n"
     "I will store it encrypted. It is used to commit the resource under your own GitHub account."
 )
 USAGE_HINT = (
