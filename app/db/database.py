@@ -95,6 +95,35 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail      TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL
 );
+
+-- Repo mirror (repo-mirror-dedup S1/S2): every link currently listed in a
+-- README of the target repo, including links added outside the bot. One row
+-- per (folder, url_key): a hand-duplicated entry stays visible from each
+-- README that lists it, and deleting one file cannot blind the intake gate.
+CREATE TABLE IF NOT EXISTS mirror_links (
+    folder    TEXT NOT NULL,
+    url_key   TEXT NOT NULL,
+    url       TEXT NOT NULL,
+    synced_at TEXT NOT NULL,
+    PRIMARY KEY (folder, url_key)
+);
+CREATE INDEX IF NOT EXISTS idx_mirror_links_key ON mirror_links(url_key);
+
+-- Per-file bookkeeping for the incremental sync: the blob sha each README had
+-- at the last successful fetch. A file whose sha is unchanged is never refetched.
+CREATE TABLE IF NOT EXISTS mirror_files (
+    path      TEXT PRIMARY KEY,
+    blob_sha  TEXT NOT NULL,
+    synced_at TEXT NOT NULL
+);
+
+-- Single-row sync state (id is pinned to 1). head_sha is the git tree object
+-- sha of the branch tip: equal shas mean the repo did not move at all.
+CREATE TABLE IF NOT EXISTS mirror_state (
+    id        INTEGER PRIMARY KEY CHECK (id = 1),
+    head_sha  TEXT NOT NULL DEFAULT '',
+    synced_at TEXT NOT NULL DEFAULT ''
+);
 """
 
 

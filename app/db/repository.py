@@ -19,7 +19,7 @@ from app.db.database import (
     RESOURCE_STATES,
     utc_now,
 )
-from app.db.models import GithubToken, Resource, UserUploadStats
+from app.db.models import GithubToken, MirrorLink, MirrorState, Resource, UserUploadStats
 
 # Columns of `resources` a caller may update alongside a state change.
 # `state` is the positional argument; id/tg_user_id/url/kind/created_at are
@@ -254,3 +254,123 @@ async def audit(
     )
     await conn.commit()
     return cursor.lastrowid
+
+
+# ---------------------------------------------------------------- mirror ---- #
+# Data access for the repo mirror (repo-mirror-dedup S1/S2/S6/S7). The mirror
+# tables are written only by app/services/repo_mirror.py and by the post-commit
+# upsert in the flow; readers must never re-implement the canonical key — the
+# caller passes canonical_url_key(url) so intake and sync agree on identity.
+
+
+async def upsert_mirror_link(
+    conn: aiosqlite.Connection, url_key: str, url: str, folder: str
+) -> None:
+    """Insert or refresh one (folder, url_key) mirror row."""
+    await conn.execute(
+        """
+        INSERT INTO mirror_links (folder, url_key, url, synced_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(folder, url_key) DO UPDATE SET
+            url = excluded.url,
+            synced_at = excluded.synced_at
+        """,
+        (folder, url_key, url, utc_now()),
+    )
+    await conn.commit()
+
+
+async def find_mirror_link(conn: aiosqlite.Connection, url_key: str) -> MirrorLink | None:
+    """One mirror row for *url_key*, or None when the repo does not list it.
+
+    Deterministic pick across folders (ORDER BY folder) so the intake reply
+    always names the same folder for the same repo state.
+    """
+    async with conn.execute(
+        "SELECT * FROM mirror_links WHERE url_key = ? ORDER BY folder LIMIT 1", (url_key,)
+    ) as cursor:
+        row = await cursor.fetchone()
+    return MirrorLink.from_row(row) if row is not None else None
+
+
+async def replace_mirror_file_links(
+    conn: aiosqlite.Connection, folder: str, links: list[tuple[str, str]]
+) -> None:
+    """Make *folder*'s mirror rows exactly match the freshly parsed README.
+
+    Rows of this folder whose key is absent now are pruned; keys still present
+    are upserted (url/synced_at refreshed). Rows of other folders are never
+    touched, so a link listed twice survives the deletion of one listing.
+    """
+    now = utc_now()
+    keys = [key for key, _ in links]
+    if keys:
+        placeholders = ", ".join("?" for _ in keys)
+        await conn.execute(
+            f"DELETE FROM mirror_links WHERE folder = ? AND url_key NOT IN ({placeholders})",
+            (folder, *keys),
+        )
+        await conn.executemany(
+            """
+            INSERT INTO mirror_links (folder, url_key, url, synced_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(folder, url_key) DO UPDATE SET
+                url = excluded.url,
+                synced_at = excluded.synced_at
+            """,
+            [(folder, key, url, now) for key, url in links],
+        )
+    else:
+        await conn.execute("DELETE FROM mirror_links WHERE folder = ?", (folder,))
+    await conn.commit()
+
+
+async def set_mirror_file_sha(conn: aiosqlite.Connection, path: str, blob_sha: str) -> None:
+    """Record (or update) the blob sha a README had at its last successful fetch."""
+    await conn.execute(
+        """
+        INSERT INTO mirror_files (path, blob_sha, synced_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+            blob_sha = excluded.blob_sha,
+            synced_at = excluded.synced_at
+        """,
+        (path, blob_sha, utc_now()),
+    )
+    await conn.commit()
+
+
+async def list_mirror_files(conn: aiosqlite.Connection) -> dict[str, str]:
+    """Map of every mirrored README path to its stored blob sha."""
+    async with conn.execute("SELECT path, blob_sha FROM mirror_files") as cursor:
+        rows = await cursor.fetchall()
+    return {row["path"]: row["blob_sha"] for row in rows}
+
+
+async def delete_mirror_file(conn: aiosqlite.Connection, folder: str) -> None:
+    """Forget a README that vanished from the repo: its sha and its link rows."""
+    await conn.execute("DELETE FROM mirror_links WHERE folder = ?", (folder,))
+    await conn.execute("DELETE FROM mirror_files WHERE path = ?", (folder,))
+    await conn.commit()
+
+
+async def get_mirror_state(conn: aiosqlite.Connection) -> MirrorState | None:
+    """The single sync-state row, or None before the first successful sync."""
+    async with conn.execute("SELECT * FROM mirror_state WHERE id = 1") as cursor:
+        row = await cursor.fetchone()
+    return MirrorState.from_row(row) if row is not None else None
+
+
+async def set_mirror_state(conn: aiosqlite.Connection, head_sha: str) -> None:
+    """Pin/refresh the sync state to the tree sha just observed."""
+    await conn.execute(
+        """
+        INSERT INTO mirror_state (id, head_sha, synced_at)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            head_sha = excluded.head_sha,
+            synced_at = excluded.synced_at
+        """,
+        (head_sha, utc_now()),
+    )
+    await conn.commit()

@@ -133,6 +133,41 @@ class Decision:
 
 
 @dataclass(frozen=True)
+class MirrorLink:
+    """One `mirror_links` row: a URL listed under a target-repo README folder.
+
+    `url_key` is the canonical identity from app.services.github.canonical_url_key;
+    `folder` is the README's directory ("" for the repo root).
+    """
+
+    url_key: str
+    url: str
+    folder: str
+    synced_at: str
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Self:
+        return cls(
+            url_key=row["url_key"],
+            url=row["url"],
+            folder=row["folder"],
+            synced_at=row["synced_at"],
+        )
+
+
+@dataclass(frozen=True)
+class MirrorState:
+    """The single `mirror_state` row: last synced tree sha and timestamp."""
+
+    head_sha: str
+    synced_at: str
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Self:
+        return cls(head_sha=row["head_sha"], synced_at=row["synced_at"])
+
+
+@dataclass(frozen=True)
 class AuditEvent:
     """One `audit_log` row. User/resource references are nullable by design."""
 
