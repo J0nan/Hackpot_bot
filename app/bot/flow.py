@@ -165,9 +165,9 @@ NEED_TOKEN_FOR_LINK = (
     "Before I can index that link, send me your GitHub Personal Access Token.\n"
      "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
     "Set the following:\n"
-    "    - Expiration to `No expiration`." 
+    "    - Expiration to `No expiration`.\n" 
     "    - Select `Only selected repositories` and choose the `Hackpot` repo on the Repository access.\n"
-    "    - Under `Repository permissions`, select `Contents: Read and write`.\n"
+    "    - Under `Repository permissions`, select `Contents: Read and write`.\n\n"
     "Generate the token, copy it, and send it to me as one bare message."
     "I will store it encrypted. It is used to commit the resource under your own GitHub account."
 )
