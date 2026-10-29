@@ -1,0 +1,23 @@
+# Secrets and local state — never commit
+.env
+.env.*
+!.env.example
+POC-decision-model
+data/
+*.sqlite3
+*.key
+odd/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+
+# OS / editors
+.DS_Store
+Thumbs.db
+
+.atl
