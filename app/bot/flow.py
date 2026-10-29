@@ -66,6 +66,7 @@ from app.db.repository import (
     audit,
     create_resource,
     delete_github_token,
+    find_mirror_link,
     get_active_resource_for_user,
     get_github_token,
     get_resource,
@@ -74,6 +75,7 @@ from app.db.repository import (
     record_decision,
     save_github_token,
     set_resource_state,
+    upsert_mirror_link,
     upsert_user,
 )
 from app.logging_config import get_logger
@@ -175,6 +177,12 @@ ALREADY_COMMITTED = "⚠️ That link is already on file in 📁 {folder} — no
 ALREADY_IN_PROGRESS = (
     "⚠️ That link is already being processed (resource #{resource_id}{folder_part}). "
     "It has not been committed yet — try again once it finishes."
+)
+# repo-mirror-dedup S1: the URL is listed in the target repo but the bot never
+# saw it (added by hand or by another tool) — the mirror says so at intake.
+ALREADY_COMMITTED_OUTSIDE = (
+    "⚠️ That link is already listed in 📁 {folder} of the Hackpot repo "
+    "(added outside this bot) — nothing new was created."
 )
 ANALYZING = "🤔 Analyzing… send /cancel anytime"  # L7-4: shown before the slow call
 DECISION_FAILED_USER = (
@@ -600,6 +608,13 @@ class ResourceFlow:
         duplicate = await self._find_duplicate(url)
         if duplicate is not None:
             return await self._duplicate_result(user_id, duplicate)
+        # repo-mirror-dedup S1: DB rows first (they carry live-flow detail),
+        # then the repo mirror — links the repo has but the bot never saw.
+        mirror = await find_mirror_link(self.deps.conn, canonical_url_key(url))
+        if mirror is not None:
+            await self._log("duplicate_mirror", user_id, detail=f"folder={mirror.folder}")
+            folder_part = mirror.folder or "the repo root"
+            return FlowResult((ALREADY_COMMITTED_OUTSIDE.format(folder=folder_part),))
         stored = await get_github_token(self.deps.conn, user_id)
         if stored is None:
             resource_id = await create_resource(self.deps.conn, user_id, url, kind)
@@ -1138,6 +1153,11 @@ class ResourceFlow:
             return FlowResult((str(exc) + COMMIT_PUBLIC_REMINDER,))
         await set_resource_state(self.deps.conn, resource.id, "COMMITTED", commit_url=commit_url)
         _transition(resource.id, resource.state, "COMMITTED")
+        # S6: the mirror learns the bot's own write immediately, so the next
+        # intake is covered without waiting for the next sync tick.
+        await upsert_mirror_link(
+            self.deps.conn, canonical_url_key(resource.url), resource.url, resource.folder
+        )
         logger.info("milestone=commit_done res=%s url=%s", resource.id, commit_url)
         await self._log("committed", user_id, resource.id, detail=commit_url)
         return FlowResult(
