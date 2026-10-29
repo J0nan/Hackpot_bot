@@ -6,8 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Host folder ownership decides write access for the ./data bind mount;
 # default matches the host uid/gid this bot runs under (override: --build-arg).
-ARG BOT_UID=586
-ARG BOT_GID=586
+ARG BOT_UID=568
+ARG BOT_GID=568
 
 RUN groupadd --gid ${BOT_GID} hackpot \
     && useradd --uid ${BOT_UID} --gid hackpot --home-dir /app --shell /usr/sbin/nologin hackpot
