@@ -138,12 +138,15 @@ def _transition(resource_id: Any, old: str, new: str) -> None:
 # --- user-visible wording (short, safe, no internals, never a secret) -------- #
 SLOW_DOWN = "You are sending too fast — please slow down and try again in a minute."
 ASK_PAT_START = (
-    "👋 Welcome, Hackpot curator! First, send me your GitHub Personal Access Token "
-    "as one bare message. It is encrypted at rest, used only for commits under your "
-    "account, and I delete your message right after capture. Tip: a fine-grained "
-    "token with contents:write on the Hackpot repo only stays revocable.\n"
-    "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot\n"
-    "Remember: all links must be public."
+    "👋 Welcome, Hackpoter! First, send me your GitHub Personal Access Token "
+    "as one bare message."
+    "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
+    "Set the following:\n"
+    "    - Expiration to `No expiration`." 
+    "    - Select `Only selected repositories` and choose the `Hackpot` repo on the Repository access.\n"
+    "    - Under `Repository permissions`, select `Contents: Read and write`.\n"
+    "Generate the token, copy it, and send it to me as one bare message."
+    "I will store it encrypted. It is used to commit the resource under your own GitHub account."
 )
 GREETING_READY = (
     "👋 Welcome back! Send the https link of the resource you want indexed. GitHub "
@@ -159,10 +162,14 @@ PAT_STILL_NEEDED = (
     "(stored encrypted, never echoed back)."
 )
 NEED_TOKEN_FOR_LINK = (
-    "Before I can index that link, send me your GitHub Personal Access Token as "
-    "one bare message. It is stored encrypted and the commit will be made under "
-    "your own account."
-    "\nHere you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot\n"
+    "Before I can index that link, send me your GitHub Personal Access Token.\n"
+     "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
+    "Set the following:\n"
+    "    - Expiration to `No expiration`." 
+    "    - Select `Only selected repositories` and choose the `Hackpot` repo on the Repository access.\n"
+    "    - Under `Repository permissions`, select `Contents: Read and write`.\n"
+    "Generate the token, copy it, and send it to me as one bare message."
+    "I will store it encrypted. It is used to commit the resource under your own GitHub account."
 )
 USAGE_HINT = (
     "Send exactly one https link (for example https://github.com/owner/repo). For a "
