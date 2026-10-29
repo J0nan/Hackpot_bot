@@ -24,6 +24,7 @@ from app.db.database import open_db
 from app.logging_config import get_logger, setup_logging
 from app.security.rate_limit import RateLimiter
 from app.services.category_sync import category_refresh_loop
+from app.services.repo_mirror import mirror_sync_loop
 
 ALLOWED_UPDATES = ["message", "callback_query"]
 
@@ -46,6 +47,7 @@ async def main() -> None:
     conn = await open_db(settings.db_path)
     http = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
     sync_task: asyncio.Task | None = None
+    mirror_task: asyncio.Task | None = None
     try:
         deps = AppDeps(
             settings=settings,
@@ -64,6 +66,10 @@ async def main() -> None:
         # construction time (the first fetch runs inside the task).
         if settings.category_sync_enabled:
             sync_task = asyncio.create_task(category_refresh_loop(settings))
+        # Repo mirror (S4): syncs the README link index once at startup, then
+        # every settings.mirror_sync_interval_hours, on the shared DB conn.
+        if settings.mirror_sync_enabled:
+            mirror_task = asyncio.create_task(mirror_sync_loop(settings, conn))
         logger.info("starting Telegram polling")
         await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
     except Exception:  # noqa: BLE001 - log the traceback, then let it propagate unchanged
@@ -74,6 +80,10 @@ async def main() -> None:
             sync_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sync_task
+        if mirror_task is not None:
+            mirror_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await mirror_task
         await http.aclose()
         await conn.close()
 

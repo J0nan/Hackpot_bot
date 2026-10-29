@@ -96,7 +96,9 @@ names the offending variable.
 | `CATEGORY_SYNC_ENABLED` | no | `true` | Master switch for the daily automatic category refresh (see **Daily category auto-sync** below). |
 | `CATEGORY_SYNC_TIME` | no | `00:00` | Local wall-clock `HH:MM` (24-hour) of the daily refresh; a sync also runs once at every startup. In docker the container clock is UTC unless `TZ` is set. |
 | `CATEGORY_SYNC_KEEP_CURATED` | no | `false` | `true` protects hand-tuned criteria: the daily sync then fills only blank/placeholder leaves instead of overwriting with README intros. |
-| `GITHUB_TOKEN` | no | — | Optional read-only token. Raises the GitHub rate limit for the daily sync and `scripts/sync_categories.py`. Never logged. |
+| `MIRROR_SYNC_ENABLED` | no | `true` | Master switch for the repo-mirror link index that blocks duplicate links already present in the repo (see **Repo mirror: duplicate-link protection** below). |
+| `MIRROR_SYNC_INTERVAL_HOURS` | no | `1` | Hours between mirror passes (0 < x ≤ 24). Incremental: a repo that did not move costs one tree API call per pass. |
+| `GITHUB_TOKEN` | no | — | Optional read-only token. Raises the GitHub rate limit for the daily sync, the mirror sync, and `scripts/sync_categories.py`. Never logged. |
 
 ### `CATEGORIES_JSON` shape
 
@@ -154,6 +156,29 @@ map, so nothing commits outside configured leaves.
 `python scripts/sync_categories.py` (same logic, `--dry-run` available) remains
 the manual on-demand refresh and the only writer that keeps the host `.env`
 current while the bot runs in docker.
+
+### Repo mirror: duplicate-link protection
+
+The bot's own DB only knows the links it processed. Links added to the repo by
+hand or by other tools would otherwise slip through and be re-committed, so a
+second background task keeps a **mirror index of every URL listed in a bullet
+of any `README.md` in `TARGET_REPO@TARGET_BRANCH`** (`mirror_links` tables):
+
+* it syncs **once immediately at startup** — this also recovers a deleted DB
+  or an offline gap — and then every `MIRROR_SYNC_INTERVAL_HOURS` (default 1);
+* each pass costs one recursive `git/trees` call; if the branch-tip tree sha
+  is unchanged, nothing else is fetched. Otherwise only READMEs whose blob
+  sha changed are refetched from the raw host (no API rate limit);
+* when a user sends a link, intake first checks the bot's rows (live or
+  committed), then the mirror — a mirror-only hit replies with the folder that
+  already lists it (`added outside this bot`) and starts nothing;
+* a successful commit upserts its own URL into the mirror immediately, so the
+  bot's writes are known before the next tick, and the pre-existing
+  commit-time duplicate check inside the target README still guards the
+  final-second race;
+* failures never lose data: a README whose fetch fails keeps its previous
+  rows and retries next tick; a tree-call failure leaves the whole mirror
+  intact; the mirror is never allowed to block intake on its own error.
 
 ---
 
@@ -344,7 +369,9 @@ from the standard skeleton.
 ## Data and recovery
 
 SQLite in WAL mode lives on the `hackpot-data` volume: `users`, `github_tokens`
-(ciphertext), `resources` (the state machine), `decisions`, and `audit_log`.
+(ciphertext), `resources` (the state machine), `decisions`, `audit_log`, and the
+repo-mirror tables `mirror_links` / `mirror_files` / `mirror_state` (rebuilt from
+GitHub by the mirror sync — deleting them only loses the index, never the data).
 
 - **Restart-safe:** mid-conversation state is in `resources.state`, so `docker compose
   restart` resumes an interview or a placement prompt exactly where it stopped.

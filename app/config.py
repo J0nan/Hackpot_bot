@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     # Optional read-only GitHub token for the daily sync (raises the API rate
     # limit; the CLI reads the same variable).
     github_token: SecretStr | None = None
+    # Repo mirror (repo-mirror-dedup S3/S4): app/services/repo_mirror.py keeps
+    # mirror_links current with every URL listed in a target-repo README, so
+    # intake can refuse links the bot never saw. The background task syncs once
+    # immediately at startup (recovers a deleted DB or an offline gap) and then
+    # every MIRROR_SYNC_INTERVAL_HOURS — incremental, so a quiet repo costs one
+    # tree API call per tick. Defaults keep every existing construction green.
+    mirror_sync_enabled: bool = True
+    mirror_sync_interval_hours: float = Field(default=1.0, gt=0.0, le=24.0)
 
     @field_validator("authorized_user_ids", mode="before")
     @classmethod
