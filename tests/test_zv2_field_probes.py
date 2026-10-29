@@ -87,7 +87,7 @@ class FakeGitHub:
         self.calls.append(("commit_entry", path, entry_line, branch, leaf_title, leaf_description))
         if self.commit_error:
             raise self.commit_error
-        return ("https://github.com/J0nan/Hackpot/commit/cafef00d", "inserted")
+        return ("https://github.com/HackPot-HQ/Hackpot/commit/cafef00d", "inserted")
 
 
 class FakeDecision:

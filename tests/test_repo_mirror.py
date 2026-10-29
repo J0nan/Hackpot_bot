@@ -59,7 +59,7 @@ def tree_entries(*pairs: tuple[str, str]) -> list[dict[str, Any]]:
 
 def make_stub(**overrides: Any) -> SimpleNamespace:
     values: dict[str, Any] = {
-        "target_repo": "J0nan/Hackpot",
+        "target_repo": "HackPot-HQ/Hackpot",
         "target_branch": "main",
         "github_token": None,
         "mirror_sync_interval_hours": 1.0,

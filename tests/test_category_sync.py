@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.services import category_sync as cs
 
-REPO = "J0nan/Hackpot"
+REPO = "HackPot-HQ/Hackpot"
 BRANCH = "main"
 
 
@@ -139,7 +139,7 @@ class TestApplyRefresh:
         )
         env = tmp_path / ".env"
         env.write_text(
-            "# keep me\nTARGET_REPO=J0nan/Hackpot\n"
+            "# keep me\nTARGET_REPO=HackPot-HQ/Hackpot\n"
             'CATEGORIES_JSON={"01_Recon_and_OSINT/OSINT":"old curated"}\n',
             encoding="utf-8",
         )
@@ -148,7 +148,7 @@ class TestApplyRefresh:
         text = env.read_text(encoding="utf-8")
         line = next(l for l in text.splitlines() if l.startswith("CATEGORIES_JSON="))
         assert json.loads(line.split("=", 1)[1]) == {p: "fresh" for p in LEAVES}
-        assert "# keep me" in text and "TARGET_REPO=J0nan/Hackpot" in text
+        assert "# keep me" in text and "TARGET_REPO=HackPot-HQ/Hackpot" in text
         backup = tmp_path / ".env.bak"
         assert "old curated" in backup.read_text(encoding="utf-8")
 
@@ -289,7 +289,7 @@ class TestScriptCliUnchanged:
         )
         env = tmp_path / ".env"
         env.write_text(
-            'TARGET_REPO=J0nan/Hackpot\nTARGET_BRANCH=main\n'
+            'TARGET_REPO=HackPot-HQ/Hackpot\nTARGET_BRANCH=main\n'
             'CATEGORIES_JSON={"01_Recon_and_OSINT/OSINT":"old curated"}\n',
             encoding="utf-8",
         )
@@ -307,7 +307,7 @@ class TestScriptCliUnchanged:
         monkeypatch.setattr(cs, "fetch_tree", fake_fetch_tree(BASE_TREE))
         monkeypatch.setattr(cs, "fetch_readme_descriptions", fake_readmes({}))
         env = tmp_path / ".env"
-        before = 'TARGET_REPO=J0nan/Hackpot\nTARGET_BRANCH=main\nCATEGORIES_JSON={}\n'
+        before = 'TARGET_REPO=HackPot-HQ/Hackpot\nTARGET_BRANCH=main\nCATEGORIES_JSON={}\n'
         env.write_text(before, encoding="utf-8")
         assert script_mod.main(["--env", str(env), "--dry-run"]) == 0
         assert env.read_text(encoding="utf-8") == before

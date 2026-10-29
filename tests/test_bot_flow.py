@@ -97,7 +97,7 @@ class FakeGitHub:
         self.calls: list[tuple] = []
         self.read_error: Exception | None = None
         self.commit_error: Exception | None = None
-        self.commit_result = ("https://github.com/J0nan/Hackpot/commit/deadbeef", "inserted")
+        self.commit_result = ("https://github.com/HackPot-HQ/Hackpot/commit/deadbeef", "inserted")
 
     async def repo_meta(self, owner: str, repo: str) -> dict[str, Any]:
         self.calls.append(("repo_meta", owner, repo))
@@ -924,7 +924,7 @@ def test_github_factory_always_pins_settings_target_repo(tmp_path: Path) -> None
 
 def test_github_factory_default_target_repo(h: dict) -> None:
     factory = make_github_factory(h["settings"], httpx.AsyncClient())
-    assert factory("tok").target_repo == "J0nan/Hackpot"
+    assert factory("tok").target_repo == "HackPot-HQ/Hackpot"
 
 
 # ------------------------------------------------- L11 hardening pins (T7)
@@ -1186,7 +1186,7 @@ async def test_handler_deletes_nothing_on_rejected_edit(h: dict) -> None:
 
 
 SECOND_USER = 555  # someone else's submission: the check is global
-COMMIT_URL = "https://github.com/J0nan/Hackpot/commit/deadbeef"
+COMMIT_URL = "https://github.com/HackPot-HQ/Hackpot/commit/deadbeef"
 OTHER_URL = "https://cool-labs.io/tool"
 
 

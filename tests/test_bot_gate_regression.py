@@ -168,7 +168,7 @@ async def test_edited_bullet_commits_only_to_validated_folder(env):  # T4 S4.5/S
         if request.method == "PUT":
             body = json.loads(request.content)
             seen.append(("PUT-CONTENT", base64.b64decode(body["content"]).decode()))
-            return httpx.Response(200, json={"content": {"commit": {"html_url": "https://github.com/J0nan/Hackpot/commit/ff"}}})
+            return httpx.Response(200, json={"content": {"commit": {"html_url": "https://github.com/HackPot-HQ/Hackpot/commit/ff"}}})
         return httpx.Response(404, json={"message": "nf"})
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(transport), timeout=30.0)
@@ -190,8 +190,8 @@ async def test_edited_bullet_commits_only_to_validated_folder(env):  # T4 S4.5/S
     assert (await get_resource(deps.conn, r)).state == "COMMITTED"
     urls = [u for method, u in seen if method != "PUT-CONTENT"]
     assert urls == [
-        f"https://api.github.com/repos/J0nan/Hackpot/contents/{LEAF}/README.md?ref=main",
-        f"https://api.github.com/repos/J0nan/Hackpot/contents/{LEAF}/README.md"]
+        f"https://api.github.com/repos/HackPot-HQ/Hackpot/contents/{LEAF}/README.md?ref=main",
+        f"https://api.github.com/repos/HackPot-HQ/Hackpot/contents/{LEAF}/README.md"]
     committed_text = [u for method, u in seen if method == "PUT-CONTENT"][0]
     assert edited in committed_text
     await http.aclose()
@@ -244,7 +244,7 @@ async def test_commit_wire_targets_only_readme_path(env):  # S16/S4/S8
     def transport(request):
         seen.append((request.method, str(request.url)))
         if request.method == "PUT":
-            return httpx.Response(200, json={"content": {"commit": {"html_url": "https://github.com/J0nan/Hackpot/commit/ff"}}})
+            return httpx.Response(200, json={"content": {"commit": {"html_url": "https://github.com/HackPot-HQ/Hackpot/commit/ff"}}})
         return httpx.Response(404, json={"message": "nf"})
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(transport), timeout=30.0)
@@ -259,8 +259,8 @@ async def test_commit_wire_targets_only_readme_path(env):  # S16/S4/S8
     row = await get_resource(deps.conn, r)
     assert row.state == "COMMITTED" and row.commit_url.endswith("/commit/ff")
     assert [u for _, u in seen] == [
-        f"https://api.github.com/repos/J0nan/Hackpot/contents/{LEAF}/README.md?ref=main",
-        f"https://api.github.com/repos/J0nan/Hackpot/contents/{LEAF}/README.md"]
+        f"https://api.github.com/repos/HackPot-HQ/Hackpot/contents/{LEAF}/README.md?ref=main",
+        f"https://api.github.com/repos/HackPot-HQ/Hackpot/contents/{LEAF}/README.md"]
     await http.aclose()
 
 

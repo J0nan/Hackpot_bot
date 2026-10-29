@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     authorized_user_ids: Annotated[frozenset[int], NoDecode] = Field(
         validation_alias=AliasChoices("AUTHORIZED_USERS", "authorized_users")
     )
-    target_repo: str = "J0nan/Hackpot"
+    target_repo: str = "HackPot-HQ/Hackpot"
     target_branch: str = "main"
     categories: Annotated[dict[str, str], NoDecode] = Field(
         validation_alias=AliasChoices("CATEGORIES_JSON", "categories")

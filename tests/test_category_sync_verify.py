@@ -143,7 +143,7 @@ async def test_cli_crlf_and_missing_env(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cs, "fetch_readme_descriptions", lambda *a, **k: {})
 
     env = tmp_path / ".env"
-    original = b"TARGET_REPO=J0nan/Hackpot\r\nCATEGORIES_JSON={}\r\n"
+    original = b"TARGET_REPO=HackPot-HQ/Hackpot\r\nCATEGORIES_JSON={}\r\n"
     env.write_bytes(original)
     assert mod.main(["--env", str(env), "--dry-run"]) == 0
     # dry-run: no write at all, CRLF bytes intact

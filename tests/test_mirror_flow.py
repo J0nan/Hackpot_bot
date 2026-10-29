@@ -72,7 +72,7 @@ class FakeGitHub:
         self.readme_text = "# Awesome\n\nBody for the model."
         self.calls: list[tuple] = []
         self.commit_error: Exception | None = None
-        self.commit_result = ("https://github.com/J0nan/Hackpot/commit/deadbeef", "inserted")
+        self.commit_result = ("https://github.com/HackPot-HQ/Hackpot/commit/deadbeef", "inserted")
 
     async def repo_meta(self, owner: str, repo: str) -> dict[str, Any]:
         return dict(self.meta)

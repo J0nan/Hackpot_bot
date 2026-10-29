@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"env file not found: {env_path} (use --repo/--dry-run to run without it)")
     values = parse_env(env_text)
 
-    repo = args.repo or values.get("TARGET_REPO") or "J0nan/Hackpot"
+    repo = args.repo or values.get("TARGET_REPO") or "HackPot-HQ/Hackpot"
     branch = args.branch or values.get("TARGET_BRANCH") or "main"
     token = os.environ.get("GITHUB_TOKEN") or values.get("GITHUB_TOKEN") or None
 

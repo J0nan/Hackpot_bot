@@ -1,7 +1,7 @@
 # Hackpot Telegram Resource Bot
 
 A Dockerized Python bot that turns a link sent in Telegram into a properly formatted
-entry in the [J0nan/Hackpot](https://github.com/J0nan/Hackpot) index. Authorized admins
+entry in the [HackPot-HQ/Hackpot](https://github.com/HackPot-HQ/Hackpot) index. Authorized admins
 send a URL; the bot reads the public README (or asks for a summary), calls the Qwen
 **decision model** to propose destination folders, collects the remaining entry fields,
 shows a preview, and commits the bullet to `main` **under the sending admin's own GitHub
@@ -81,7 +81,7 @@ names the offending variable.
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | — | BotFather token. Treated as a secret, never logged. |
 | `AUTHORIZED_USERS` | yes | — | Comma-separated **numeric** Telegram user IDs, e.g. `123456789,987654321`. At least one, all positive. Usernames are stored for audit only; authorization is by ID. |
-| `TARGET_REPO` | no | `J0nan/Hackpot` | `owner/repo` that receives the commits. |
+| `TARGET_REPO` | no | `HackPot-HQ/Hackpot` | `owner/repo` that receives the commits. |
 | `TARGET_BRANCH` | no | `main` | Branch the Contents API writes to. |
 | `CATEGORIES_JSON` | yes | — | JSON map of leaf category path → decision-model criteria (see below). |
 | `QWEN_API_URL` | yes | — | `https://…/compatible-mode/v1/systemone`. Must be `https://`. |
@@ -116,7 +116,7 @@ that folder, not just its name.
 The commit path is always `<key>/README.md`, so a key that is not configured can never be
 committed to — this is the path-traversal gate.
 
-Seeded leaf categories currently available in `J0nan/Hackpot` (11 domains, **31 leaves**,
+Seeded leaf categories currently available in `HackPot-HQ/Hackpot` (11 domains, **31 leaves**,
 verified against `main`; note that the ODD feature doc still carries a plan-time figure of
 34 — trust the live tree and regenerate this list when in doubt):
 

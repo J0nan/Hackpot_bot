@@ -204,7 +204,7 @@ class TestPlaceholderCriteria:
 ENV_TEXT = "\n".join(
     [
         "# comment",
-        "TARGET_REPO=J0nan/Hackpot",
+        "TARGET_REPO=HackPot-HQ/Hackpot",
         'CATEGORIES_JSON={"01_Recon_and_OSINT/OSINT":"old"}',
         "QWEN_MODEL=decision-model-preview",
         "",
@@ -217,7 +217,7 @@ class TestReplaceInEnv:
         cats = {"01_Recon_and_OSINT/OSINT": "new desc", "02_Web_Application/Proxies_and_Scanners": "p"}
         out = mod.replace_in_env(ENV_TEXT, cats)
         assert "# comment" in out
-        assert "TARGET_REPO=J0nan/Hackpot" in out
+        assert "TARGET_REPO=HackPot-HQ/Hackpot" in out
         assert "QWEN_MODEL=decision-model-preview" in out
         assert "old" not in out
         line = next(l for l in out.splitlines() if l.startswith("CATEGORIES_JSON="))
@@ -225,7 +225,7 @@ class TestReplaceInEnv:
 
     def test_appends_when_line_missing(self, mod):
         cats = {"01_Recon_and_OSINT/OSINT": "desc"}
-        out = mod.replace_in_env("TARGET_REPO=J0nan/Hackpot\n", cats)
+        out = mod.replace_in_env("TARGET_REPO=HackPot-HQ/Hackpot\n", cats)
         assert "CATEGORIES_JSON=" in out
         line = next(l for l in out.splitlines() if l.startswith("CATEGORIES_JSON="))
         assert json.loads(line.split("=", 1)[1]) == cats
@@ -242,7 +242,7 @@ class TestReplaceInEnv:
 class TestParseEnvFile:
     def test_splits_first_equals_only(self, mod):
         values = mod.parse_env(ENV_TEXT)
-        assert values["TARGET_REPO"] == "J0nan/Hackpot"
+        assert values["TARGET_REPO"] == "HackPot-HQ/Hackpot"
         assert json.loads(values["CATEGORIES_JSON"])["01_Recon_and_OSINT/OSINT"] == "old"
 
     def test_ignores_comments_and_blank_lines(self, mod):

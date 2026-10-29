@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 
 # --- S13: the target repo's contribution guidelines -------------------------- #
 
-#: Allowed `type:` tags (J0nan/Hackpot CONTRIBUTING.md).
+#: Allowed `type:` tags (HackPot-HQ/Hackpot CONTRIBUTING.md).
 ENTRY_TYPES: tuple[str, ...] = ("tool", "course", "docs", "wordlist", "lab", "article", "video")
 #: Cost tags the repo used to carry (S13 history). They are LEGACY ONLY: the
 #: bot never asks or emits them, and build strips them from platform tags so
@@ -45,7 +45,7 @@ MAX_NAME_LEN = 120
 MAX_DESCRIPTION_LEN = 500
 MAX_TAG_LEN = 40
 
-DEFAULT_TARGET_REPO = "J0nan/Hackpot"  # S4; callers should pass Settings.target_repo
+DEFAULT_TARGET_REPO = "HackPot-HQ/Hackpot"  # S4; callers should pass Settings.target_repo
 
 _GITHUB_HOST = "github.com"
 _OWNER_RE = re.compile(r"^[A-Za-z0-9._-]{1,39}$")

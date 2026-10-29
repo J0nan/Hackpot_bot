@@ -197,7 +197,7 @@ def test_looks_like_token_accepts_bare_message() -> None:
         pytest.param(f"{VALID_CLASSIC}\n{VALID_FINE_GRAINED}", id="two-lines"),
         pytest.param(f"please use {VALID_CLASSIC} thanks", id="embedded-in-sentence"),
         pytest.param("ghp_" + "A" * 40 + "\r", id="carriage-return"),
-        pytest.param("https://github.com/J0nan/Hackpot", id="url"),
+        pytest.param("https://github.com/HackPot-HQ/Hackpot", id="url"),
         pytest.param(None, id="non-string"),
     ],
 )
@@ -348,8 +348,8 @@ def test_mask_never_contains_the_secret_body() -> None:
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        ("https://github.com/J0nan/Hackpot", "https://github.com/J0nan/Hackpot"),
-        ("  https://github.com/J0nan/Hackpot  ", "https://github.com/J0nan/Hackpot"),
+        ("https://github.com/HackPot-HQ/Hackpot", "https://github.com/HackPot-HQ/Hackpot"),
+        ("  https://github.com/HackPot-HQ/Hackpot  ", "https://github.com/HackPot-HQ/Hackpot"),
         ("https://github.com/a/b?x=1&y=2#readme", "https://github.com/a/b?x=1&y=2#readme"),
         ("https://example.com/Path/To?q=a%20b#frag", "https://example.com/Path/To?q=a%20b#frag"),
         ("https://tool.example.co.uk/", "https://tool.example.co.uk/"),
@@ -375,11 +375,11 @@ def test_sanitize_url_accepts_exactly_the_length_limit() -> None:
 @pytest.mark.parametrize(
     "raw",
     [
-        pytest.param("http://github.com/J0nan/Hackpot", id="not-https"),
+        pytest.param("http://github.com/HackPot-HQ/Hackpot", id="not-https"),
         pytest.param("ftp://example.com/tool", id="ftp"),
         pytest.param("file:///etc/passwd", id="file-scheme"),
         pytest.param("javascript:alert(1)", id="javascript-scheme"),
-        pytest.param("github.com/J0nan/Hackpot", id="no-scheme"),
+        pytest.param("github.com/HackPot-HQ/Hackpot", id="no-scheme"),
         pytest.param("//example.com/x", id="protocol-relative"),
         pytest.param("https://user:***@github.com/a/b", id="userinfo-credentials"),
         pytest.param("https:***@github.com/a", id="bearer-in-userinfo"),

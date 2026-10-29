@@ -32,7 +32,7 @@ from app.services.github import (
     parse_repo_url,
 )
 
-TARGET = "J0nan/Hackpot"
+TARGET = "HackPot-HQ/Hackpot"
 LEAF = "01_Recon_and_OSINT/OSINT/README.md"
 TOKEN = "ghp_test-secret-value"
 
@@ -78,15 +78,15 @@ def body_of(recorder: Recorder, index: int) -> dict[str, Any]:
 @pytest.mark.parametrize(
     "url,expected",
     [
-        ("https://github.com/J0nan/Hackpot", ("J0nan", "Hackpot")),
-        ("https://www.github.com/J0nan/Hackpot", ("J0nan", "Hackpot")),
-        ("https://github.com/J0nan/Hackpot/", ("J0nan", "Hackpot")),
-        ("https://github.com/J0nan/Hackpot.git", ("J0nan", "Hackpot")),
-        ("https://github.com/J0nan/Hackpot/tree/main/01_Recon/README.md", ("J0nan", "Hackpot")),
-        ("https://github.com/J0nan/Hackpot/blob/main/README.md#usage", ("J0nan", "Hackpot")),
-        ("https://github.com/J0nan/Hackpot/issues/3", ("J0nan", "Hackpot")),
-        ("https://github.com/J0nan/Hackpot?ref=1", ("J0nan", "Hackpot")),
-        ("HTTPS://GitHub.COM/J0nan/Hackpot", ("J0nan", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot", ("J0nan", "Hackpot")),
+        ("https://www.github.com/HackPot-HQ/Hackpot", ("J0nan", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot/", ("J0nan", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot.git", ("J0nan", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot/tree/main/01_Recon/README.md", ("J0nan", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot/blob/main/README.md#usage", ("J0nan", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot/issues/3", ("J0nan", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot?ref=1", ("J0nan", "Hackpot")),
+        ("HTTPS://GitHub.COM/HackPot-HQ/Hackpot", ("J0nan", "Hackpot")),
         ("https://GitHub.com/MixedCase/RepoName", ("MixedCase", "RepoName")),
         ("https://github.com/a.b/c-d_e.git", ("a.b", "c-d_e")),
         ("https://www.GitHub.com/x/y/", ("x", "y")),
@@ -101,7 +101,7 @@ def test_parse_repo_url_accepts(url: str, expected: tuple[str, str]) -> None:
     [
         "",
         "owner/repo",
-        "J0nan/Hackpot",
+        "HackPot-HQ/Hackpot",
         "github.com/x/y",
         "https://evil.com/github.com/x/y",
         "https://github.com.evil.com/x/y",
@@ -653,7 +653,7 @@ async def test_repo_meta_happy() -> None:
     )
     client = client_for(recorder)
     meta = await client.repo_meta("J0nan", "Hackpot")
-    assert recorder.paths == ["https://api.github.com/repos/J0nan/Hackpot"]
+    assert recorder.paths == ["https://api.github.com/repos/HackPot-HQ/Hackpot"]
     assert meta == {
         "description": "Pentest resources",
         "default_branch": "main",
@@ -686,7 +686,7 @@ async def test_readme_decodes_base64_unicode() -> None:
     recorder = Recorder([(200, {"name": "README.md", "content": b64(body), "encoding": "base64"})])
     client = client_for(recorder)
     assert await client.readme("J0nan", "Hackpot") == body
-    assert recorder.paths == ["https://api.github.com/repos/J0nan/Hackpot/readme"]
+    assert recorder.paths == ["https://api.github.com/repos/HackPot-HQ/Hackpot/readme"]
 
 
 async def test_readme_error_is_fetch_error_with_public_hint() -> None:

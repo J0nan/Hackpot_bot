@@ -234,11 +234,11 @@ async def test_decision_retry_warning_and_success_info(
 # --------------------------------------------------------------------------- #
 async def test_github_logs_commit_without_token(capsys: pytest.CaptureFixture[str]) -> None:
     setup_logging("DEBUG", secrets=(FAKE_GHP,))
-    commit_url = "https://github.com/J0nan/Hackpot/commit/deadbeef"
+    commit_url = "https://github.com/HackPot-HQ/Hackpot/commit/deadbeef"
     scripted = Scripted([httpx.Response(200, json={"content": {"commit": {"html_url": commit_url}}})])
     client = httpx.AsyncClient(transport=httpx.MockTransport(scripted))
     try:
-        gh = GitHubClient(FAKE_GHP, client, "J0nan/Hackpot")
+        gh = GitHubClient(FAKE_GHP, client, "HackPot-HQ/Hackpot")
         url = await gh.put_file("02_Web_Application/Vulnerability_Specific/README.md", "text", "sha1", "msg", "main")
     finally:
         await client.aclose()
@@ -257,7 +257,7 @@ async def test_github_warns_on_read_error(capsys: pytest.CaptureFixture[str]) ->
     scripted = Scripted([httpx.Response(403, json={"message": "forbidden"})])
     client = httpx.AsyncClient(transport=httpx.MockTransport(scripted))
     try:
-        gh = GitHubClient(FAKE_GHP, client, "J0nan/Hackpot")
+        gh = GitHubClient(FAKE_GHP, client, "HackPot-HQ/Hackpot")
         with pytest.raises(FetchError):
             await gh.repo_meta("owner", "repo")
     finally:
