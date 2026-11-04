@@ -18,7 +18,7 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
-from app.bot import pending_edits
+from app.bot import pending_edits, rearm
 from app.bot.flow import (
     ALREADY_COMMITTED,
     ALREADY_COMMITTED_OUTSIDE,
@@ -125,8 +125,10 @@ async def h(tmp_path: Path) -> AsyncIterator[dict[str, Any]]:
 @pytest.fixture(autouse=True)
 def _no_stale_edit_markers() -> AsyncIterator[None]:
     pending_edits.clear_all()
+    rearm.clear_all()
     yield
     pending_edits.clear_all()
+    rearm.clear_all()
 
 
 async def _audit(h: dict, action: str) -> list[dict[str, Any]]:
@@ -151,6 +153,7 @@ async def _to_confirming(h: dict) -> ResourceFlow:
     flow = await _to_placement(h)
     await flow.handle_folder_choice(USER, CHOSEN)
     await flow.handle_callback(USER, "jonan", "tool")
+    await flow.handle_callback(USER, "jonan", "keep")  # arm the platforms step (S3)
     await flow.handle_text(USER, "jonan", "linux")
     return flow
 

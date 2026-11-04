@@ -282,6 +282,10 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
         │
         ▼
  commit URL + audit rows in SQLite (resumes where it stopped after a restart)
+
+ guard, every step above: while a flow is in progress ANY text message asks
+ "⏸️ ▶️ Continue / ❌ Cancel" instead of being guessed at — Continue re-sends
+ the current step's message and your next message is its answer.
 ```
 
 ---
@@ -292,6 +296,13 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
   message; the bot encrypts it and deletes your message.
 - **Send a link** — exactly one `https` URL per message. GitHub repos are read
   automatically; anything else gets a summary question.
+- **Mid-flow text guard** — while a resource flow is in progress, **any text
+  you send** gets a "⏸️ Continue or Cancel?" prompt instead of being guessed at.
+  **▶️ Continue** re-sends the current step's message and your next message is
+  its answer (a rejected answer re-asks the same step without another press);
+  **❌ Cancel** (or `/cancel`) drops the resource. Buttons — and the ✏️/🏷️
+  paste-back right after pressing one — are never guarded. The armed answer is
+  process-local: a restart drops it and the prompt simply returns.
 - **Pick a folder** — the candidate buttons show the model's confidence; `📂 Other folder…`
   lists every configured leaf, paged, so you can always override the decision. Arbitrary
   paths are never accepted.
@@ -310,8 +321,8 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
   bullet. Rejected pastes answer one specific error plus the re-offered prompt,
   nothing is stored, edits can repeat any number of times, and ✅/❌ stay
   available throughout. The marker for a pending paste-back is process-local:
-  after a bot restart, plain text in the confirm step just re-shows the button
-  hint.
+  after a bot restart, plain text in the confirm step falls into the text
+  guard above (the Continue/Cancel prompt) instead of interrupt-pasting.
 - **`/forget`** deletes your stored token (rotate a revoked PAT this way), then `/start`
   to save the new one. **`/help`** prints the command list; **`/cancel`** aborts the
   current resource at any step.

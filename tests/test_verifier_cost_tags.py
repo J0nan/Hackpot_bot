@@ -13,6 +13,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 import app.bot.keyboards as kb_mod
+from app.bot import rearm
 from app.bot.flow import UNKNOWN_CALLBACK, AppDeps, ResourceFlow
 from app.config import Settings
 from app.db.database import open_db
@@ -72,6 +73,14 @@ async def h(tmp_path: Path):
         await conn.close()
 
 
+@pytest.fixture(autouse=True)
+def _no_stale_arms():
+    """Re-arms are process-global and tmp DBs reuse user ids across tests."""
+    rearm.clear_all()
+    yield
+    rearm.clear_all()
+
+
 async def _to_confirming(h, platforms: str = "linux") -> int:
     flow = h["flow"]
     await flow.handle_start(USER, "jonan")
@@ -79,6 +88,7 @@ async def _to_confirming(h, platforms: str = "linux") -> int:
     await flow.handle_text(USER, "jonan", URL)
     await flow.handle_folder_choice(USER, CHOSEN)
     await flow.handle_callback(USER, "jonan", "tool")
+    await flow.handle_callback(USER, "jonan", "keep")  # arm the platforms step (S3)
     await flow.handle_text(USER, "jonan", platforms)
     async with h["conn"].execute("SELECT id FROM resources ORDER BY id DESC LIMIT 1") as c:
         return (await c.fetchone())["id"]

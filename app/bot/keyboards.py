@@ -4,8 +4,9 @@ No I/O and no flow logic: each builder turns already-validated data into an
 aiogram InlineKeyboardMarkup deterministically. Callback payloads are small
 and carry only indices into ``sorted(settings.categories)`` (``c:<i>`` /
 ``f:<i>``), list navigation (``o``, ``p:<i>``), plain allowed tags for the
-interview, ``✅`` / ``❌`` and the confirmation-row field edits
-``✏️ Description`` (``d``) / ``🏷️ Tags`` (``t``) — and — never raw folder
+interview, ``✅`` / ``❌``, the confirmation-row field edits
+``✏️ Description`` (``d``) / ``🏷️ Tags`` (``t``) and the mid-flow
+``▶️ Continue`` (``keep``) from flow-interrupt-rearm — and never raw folder
 paths (Telegram caps callback_data at 64 bytes, and indices kill the
 path-injection surface).
 """
@@ -39,6 +40,10 @@ HELP_TEXT = (
     "for a summary. Then pick a folder (my suggestions or 📂 Other folder…), "
     "answer the entry questions, and confirm the commit — made under your own "
     "account, to the configured branch.\n"
+    "\n"
+    "While a flow is running, any text message pauses it and asks first: press "
+    "▶️ Continue to re-open the current step (your next message is then the "
+    "answer) or ❌ Cancel to drop the resource.\n"
     "\n"
     "If a link is already on file I say so — with the folder it lives in — "
     "before doing anything else.\n"
@@ -141,5 +146,15 @@ def confirm_kb(folder: str) -> InlineKeyboardMarkup:
             # S6.1 (T4): one row, two field-edit buttons — payloads "d"/"t",
             # valid only while CONFIRMING. The whole-bullet "e" row is removed.
             [_button("✏️ Description", "d"), _button("🏷️ Tags", "t")],
+        ]
+    )
+
+
+def resume_kb() -> InlineKeyboardMarkup:
+    """flow-interrupt-rearm S1: ▶️ Continue ("keep") / ❌ Cancel under the prompt."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button("▶️ Continue", "keep")],
+            [_button("❌ Cancel", "❌")],
         ]
     )

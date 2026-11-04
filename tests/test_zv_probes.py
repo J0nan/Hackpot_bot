@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from app.bot import handlers, pending_edits
+from app.bot import handlers, pending_edits, rearm
 from app.bot.flow import ConfirmKB, PREVIEW, UNKNOWN_CALLBACK
 import test_bot_flow
 from app.bot.keyboards import confirm_kb
@@ -45,8 +45,10 @@ CARD = 90042
 def _no_stale_markers():
     """Markers are process-global; tmp DBs reuse resource ids across tests."""
     pending_edits.clear_all()
+    rearm.clear_all()
     yield
     pending_edits.clear_all()
+    rearm.clear_all()
 
 
 async def _press(flow, data: str, message_id: int = CARD):
@@ -200,6 +202,7 @@ async def test_s1_edit_keypress_in_other_states_is_unknown_callback_audited(h: d
 
     # S6.1/S6.7: the removed "e" payload now lands in the same tail while CONFIRMING.
     await flow.handle_callback(USER, "jonan", "tool")
+    await flow.handle_callback(USER, "jonan", "keep")  # arm the platforms step (S3)
     await flow.handle_text(USER, "jonan", "linux")  # -> CONFIRMING
     result = await flow.handle_callback(USER, "jonan", "e")
     assert result.replies == (UNKNOWN_CALLBACK,)

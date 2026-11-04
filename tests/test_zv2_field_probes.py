@@ -16,12 +16,13 @@ import pytest
 from aiogram.exceptions import TelegramAPIError
 from cryptography.fernet import Fernet
 
-from app.bot import handlers, pending_edits
+from app.bot import handlers, pending_edits, rearm
 from app.bot.flow import (
     ASK_DESCRIPTION,
-    CONFIRMING_HINT,
     EDIT_UNAVAILABLE,
+    FLOW_INTERRUPTED,
     PREVIEW,
+    ResumeKB,
     UNKNOWN_CALLBACK,
     AppDeps,
     ConfirmKB,
@@ -127,8 +128,10 @@ async def h(tmp_path):
 @pytest.fixture(autouse=True)
 def _no_stale_markers():
     pending_edits.clear_all()
+    rearm.clear_all()
     yield
     pending_edits.clear_all()
+    rearm.clear_all()
 
 
 async def _audit(h, action):
@@ -168,6 +171,7 @@ async def _to_confirming(h, url: str = URL):
     await flow.handle_text(USER, "verifier", url)
     await flow.handle_folder_choice(USER, CHOSEN)
     await flow.handle_callback(USER, "verifier", "tool")
+    await flow.handle_callback(USER, "verifier", "keep")  # arm the platforms step (S3)
     await flow.handle_text(USER, "verifier", "linux")
     return await _rid(h)
 
@@ -361,7 +365,8 @@ async def test_v3_unparseable_row_degrades_gracefully(h):
         assert result.replies == (EDIT_UNAVAILABLE,)
         assert pending_edits.get_marker(rid) is None
     result = await h["flow"].handle_text(USER, "verifier", "anything")
-    assert result.replies == (CONFIRMING_HINT,)
+    # flow-interrupt-rearm S1: un-armed CONFIRMING text now gets the prompt.
+    assert result.replies == (FLOW_INTERRUPTED,)
 
 
 # ------------------------------------------ V4 (byte-faithful edit pipeline)
@@ -486,13 +491,13 @@ async def test_v5_delete_failure_does_not_break_the_edit_flow(h):
 # ------------------------------------------------------ V6 (marker lifecycle)
 
 
-async def test_v6_text_without_marker_restores_hint_row_untouched(h):
+async def test_v6_text_without_marker_asks_continue_or_cancel_row_untouched(h):
     rid = await _to_confirming(h)
     before = await _digest(h, rid)
     whole_bullet = "- [X](https://x.example/) - pasted bullet. `type:tool` `free`"
     result = await h["flow"].handle_text(USER, "verifier", whole_bullet)
-    assert result.replies == (CONFIRMING_HINT,)
-    assert result.keyboard is None
+    assert result.replies == (FLOW_INTERRUPTED,)  # S1: the paste is never intercepted
+    assert isinstance(result.keyboard, ResumeKB)
     assert await _digest(h, rid) == before  # whole-bullet paste is NOT intercepted
 
 
@@ -503,7 +508,7 @@ async def test_v6_restart_loses_marker_and_falls_back(h):
     assert pending_edits.get_marker(rid) is not None
     pending_edits.clear_all()  # simulates the process restart (S6.5)
     result = await h["flow"].handle_text(USER, "verifier", "late paste after restart")
-    assert result.replies == (CONFIRMING_HINT,)
+    assert result.replies == (FLOW_INTERRUPTED,)  # S1: restart dropped marker AND arm
     assert await _digest(h, rid) == before
 
 

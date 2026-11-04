@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app.bot import handlers, pending_edits
+from app.bot import handlers, pending_edits, rearm
 from app.bot.flow import (ASK_PLATFORMS, INVALID_FIELD, UNKNOWN_FOLDER,
                           AppDeps, ResourceFlow, make_github_factory)
 from app.config import Settings
@@ -102,8 +102,10 @@ async def _audit(conn):
 def _no_stale_edit_markers():
     """T4 markers are process-global; tmp DBs reuse resource ids across tests."""
     pending_edits.clear_all()
+    rearm.clear_all()
     yield
     pending_edits.clear_all()
+    rearm.clear_all()
 
 
 async def test_unauthorized_text_is_silent_and_audited(env):  # S9/S17
@@ -218,6 +220,7 @@ async def test_injection_guard_rejects_markup_in_name(env):  # L7-1
     r = await create_resource(deps.conn, UID, "https://example.com/t", "other")
     await set_resource_state(deps.conn, r, "AWAITING_ENTRY_INFO",
                              folder="01_Recon/Tools", context="c", entry_line="{}")
+    await flow.handle_callback(UID, UNAME, "keep")  # arms the name step (S3)
     res = await flow.handle_text(UID, UNAME, "Evil](https://evil)")
     assert res.replies == (INVALID_FIELD.format(label="Name"),)
     assert (await get_resource(deps.conn, r)).entry_line == "{}"
@@ -287,6 +290,7 @@ async def test_resume_mid_interview_on_fresh_flow(env):  # S10
     await set_resource_state(deps.conn, r, "AWAITING_ENTRY_INFO", folder=LEAF, context="c",
                              entry_line=json.dumps({"name": "n", "description": "d"}, sort_keys=True))
     fresh = ResourceFlow(deps)  # simulate a restarted process
+    await fresh.handle_callback(UID, UNAME, "keep")  # arms the platforms step (S3)
     assert (await fresh.handle_text(UID, UNAME, "tool")).replies == (ASK_PLATFORMS,)
     assert json.loads((await get_resource(deps.conn, r)).entry_line)["type"] == "tool"
 
