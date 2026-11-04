@@ -119,6 +119,7 @@ def _links_noun(count: int) -> str:
     return f"{count} {'link' if count == 1 else 'links'}"
 _NAME_MAX = 120
 _DESC_MAX = 500
+_MAX_CONTEXT_CHARS = 2 * SUMMARY_MAX_CHARS  # stored-context cap across retries
 IV_FIELDS: tuple[str, ...] = ("name", "description", "type", "platforms")
 NEEDS_ADMIN_THRESHOLD = 0.5  # S7
 
@@ -204,6 +205,11 @@ ANALYZING = "🤔 Analyzing… send /cancel anytime"  # L7-4: shown before the s
 DECISION_FAILED_USER = (
     "The decision model could not classify this resource just now. Nothing was "
     "committed — you can send the link again later or use /cancel."
+)
+DECISION_UNRELIABLE_USER = (
+    "🤖 The decision model did not return a reliable result — nothing was "
+    "suggested. Pick a folder below, or send a few words about this resource "
+    "and I'll classify it again with that extra context."
 )
 PLACEMENT_HINT = (
     "Pick a destination folder — press its number above (📂 Other folder… "
@@ -525,6 +531,9 @@ class ResourceFlow:
         if state == "NEED_SUMMARY":
             return await self._record_summary(user_id, active, text, progress)
         if state == "AWAITING_PLACEMENT":
+            if await self._latest_decision_unreliable(active.id):
+                # unreliable-decision-retry S2: the armed text adds context and re-classifies
+                return await self._retry_with_context(user_id, active, text, progress)
             return FlowResult((PLACEMENT_HINT,))
         if state == "AWAITING_ENTRY_INFO":
             return await self._interview_text(user_id, active, text)
@@ -647,6 +656,9 @@ class ResourceFlow:
                 return await self.handle_decision(user_id)  # decision not run yet
             return FlowResult((USAGE_HINT,))
         if state == "AWAITING_PLACEMENT":
+            if await self._latest_decision_unreliable(resource.id):
+                # unreliable-decision-retry S4: the step re-shown is the ask as first shown
+                return await self._no_candidates_step(user_id)
             return await self.handle_more_folders(user_id)
         if state == "AWAITING_ENTRY_INFO":
             iv = _load_iv(resource.entry_line)
@@ -864,19 +876,69 @@ class ResourceFlow:
         )
         replies = [f"Done thinking — {len(result.candidates)} folder(s) cleared the bar."]
         if not result.candidates:
-            replies.append("No folder reached the confidence threshold — pick one via 📂 Other folder…")
-        else:
-            # Option B on the decision card: readable numbered caption, number buttons.
-            replies.append(
-                folder_picker.candidates_list_html(
-                    result.candidates, sorted(settings.categories)
-                )
+            # unreliable-decision-retry: the model returned no usable value —
+            # show every folder and invite a text message as extra context.
+            return await self._no_candidates_step(user_id)
+        # Option B on the decision card: readable numbered caption, number buttons.
+        replies.append(
+            folder_picker.candidates_list_html(
+                result.candidates, sorted(settings.categories)
             )
+        )
         return FlowResult(
             tuple(replies),
             keyboard=CandidatesKB(tuple(result.candidates)),
             parse_mode=PARSE_HTML,
         )
+
+    async def _no_candidates_step(self, user_id: int) -> FlowResult:
+        """The ask shown when the model produced no candidate (unreliable-decision-retry S1).
+
+        Full picker page 0 plus the context invite, and the user is armed so
+        exactly the next text update re-runs the classification with it; any
+        button press drops the arm (flow-interrupt-rearm S3 still holds).
+        """
+        rearm.arm(user_id)
+        folders = sorted(self.deps.settings.categories)
+        return FlowResult(
+            (DECISION_UNRELIABLE_USER, folder_picker.folders_list_html(folders, 0)),
+            keyboard=FoldersKB(page=0),
+            parse_mode=PARSE_HTML,
+        )
+
+    async def _latest_decision_unreliable(self, resource_id: int) -> bool:
+        """True when the newest decision row recorded no folder above threshold."""
+        async with self.deps.conn.execute(
+            "SELECT folder_choice FROM decisions WHERE resource_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (resource_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row is not None and not row["folder_choice"]
+
+    async def _retry_with_context(
+        self, user_id: int, resource: Any, text: str, progress: ProgressSink | None = None
+    ) -> FlowResult:
+        """unreliable-decision-retry S2: the armed text is extra context, not a command.
+
+        The line is appended to the stored context (capped, newest kept) and
+        the classification re-runs through :meth:`handle_decision`; if it is
+        still unreliable the same step is re-offered, armed again for another
+        try. Empty text re-asks without spending a model call.
+        """
+        extra = sanitize_line(text, SUMMARY_MAX_CHARS)
+        if not extra:
+            return await self._no_candidates_step(user_id)
+        base = resource.context or ""
+        combined = f"{base}\n\n{extra}" if base else extra
+        if len(combined) > _MAX_CONTEXT_CHARS:
+            combined = combined[-_MAX_CONTEXT_CHARS:]  # keep the newest context
+        await set_resource_state(self.deps.conn, resource.id, "NEW", context=combined)
+        _transition(resource.id, resource.state, "NEW")
+        await self._log(
+            "context_retry", user_id, resource.id, detail=f"chars={len(extra)}"
+        )
+        return await self.handle_decision(user_id, progress)
 
     # -- placement ---------------------------------------------------------------- #
 

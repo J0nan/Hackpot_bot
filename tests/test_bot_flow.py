@@ -448,6 +448,101 @@ async def test_decision_failure_fails_resource_and_audits_without_leaks(h: dict)
     assert await get_active_resource_for_user(h["conn"], USER) is None  # FAILED is final
 
 
+# ------------------------------------------------- unreliable decision retry
+
+
+def _empty_decision() -> ClassificationResult:
+    """Model answered, but no folder cleared the confidence bar."""
+    return ClassificationResult(
+        candidates=[], needs_admin=None, request_id="req-empty", raw={"answers": {}}
+    )
+
+
+async def test_decision_without_value_shows_all_folders_and_asks_context(h: dict) -> None:
+    h["decision"].result = _empty_decision()
+    flow = h["flow"]
+    await _capture_token(h)
+    result = await flow.handle_text(USER, "jonan", GITHUB_URL)
+
+    resource = await get_active_resource_for_user(h["conn"], USER)
+    assert resource.state == "AWAITING_PLACEMENT"
+    assert isinstance(result.keyboard, FoldersKB)  # every folder, not "go press Other folder…"
+    assert result.parse_mode == "HTML"
+    lowered = "\n".join(result.replies).lower()
+    assert "reliable" in lowered  # the model told them so plainly
+    assert "context" in lowered  # and the text-retry invite is visible
+    caption = result.replies[-1]
+    assert "Choose destination folder" in caption
+    for folder in FOLDERS:  # all configured leaves are on the card
+        assert folder.partition("/")[2].replace("_", " ") in caption
+
+    async with h["conn"].execute(
+        "SELECT folder_choice, confidence FROM decisions WHERE resource_id = ?", (resource.id,)
+    ) as cur:
+        row = dict(await cur.fetchone())
+    assert row["folder_choice"] == "" and row["confidence"] == 0.0  # audit keeps the empty answer
+
+
+async def test_added_context_text_reclassifies_and_resumes_candidates(h: dict) -> None:
+    h["decision"].result = _empty_decision()
+    flow = h["flow"]
+    await _capture_token(h)
+    await flow.handle_text(USER, "jonan", GITHUB_URL)
+
+    # The ask is armed: the next text is extra context — no keep press needed.
+    h["decision"].result = FakeDecision().result
+    result = await flow.handle_text(USER, "jonan", "It fuzzes GraphQL APIs for auth bypass")
+    assert isinstance(result.keyboard, CandidatesKB)  # back to the normal decision card
+
+    content = h["decision"].calls[-1]["content"]
+    assert content.startswith(GITHUB_URL)
+    assert "Readme magic body" in content  # the original context is kept
+    assert "It fuzzes GraphQL APIs for auth bypass" in content  # the added text is used
+    resource = await get_active_resource_for_user(h["conn"], USER)
+    assert resource.state == "AWAITING_PLACEMENT"
+    assert "It fuzzes GraphQL" in resource.context  # and persisted for later steps
+    rows = await _audit(h, "context_retry")
+    assert rows and rows[-1]["resource_id"] == resource.id
+
+
+async def test_context_retry_still_unreliable_re_offers_folders_armed(h: dict) -> None:
+    h["decision"].result = _empty_decision()
+    flow = h["flow"]
+    await _capture_token(h)
+    await flow.handle_text(USER, "jonan", GITHUB_URL)
+
+    result = await flow.handle_text(USER, "jonan", "first extra note")
+    assert isinstance(result.keyboard, FoldersKB)  # still nothing reliable: folders again
+    result = await flow.handle_text(USER, "jonan", "   ")  # empty context re-asks, no call spent
+    assert isinstance(result.keyboard, FoldersKB)
+    assert len(h["decision"].calls) == 2  # whitespace did not hit the model again
+
+    result = await flow.handle_text(USER, "jonan", "second extra note")
+    assert isinstance(result.keyboard, FoldersKB)
+    content = h["decision"].calls[-1]["content"]
+    assert "first extra note" in content and "second extra note" in content
+    assert len(h["decision"].calls) == 3
+
+
+async def test_continue_re_offers_unreliable_step_and_arms_retry(h: dict) -> None:
+    h["decision"].result = _empty_decision()
+    flow = h["flow"]
+    await _capture_token(h)
+    await flow.handle_text(USER, "jonan", GITHUB_URL)
+    await flow.handle_callback(USER, "jonan", "o")  # browsing the picker drops the arm
+
+    result = await flow.handle_text(USER, "jonan", "context after guard")
+    assert result.replies == (FLOW_INTERRUPTED,)
+    assert isinstance(result.keyboard, ResumeKB)
+
+    resumed = await flow.handle_callback(USER, "jonan", "keep")
+    assert isinstance(resumed.keyboard, FoldersKB)
+    assert "reliable" in "\n".join(resumed.replies).lower()  # the step as first shown, invite and all
+
+    await flow.handle_text(USER, "jonan", "context after guard")  # now consumed as retry
+    assert "context after guard" in h["decision"].calls[-1]["content"]
+
+
 # ---------------------------------------------------------------- placement
 
 
