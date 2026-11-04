@@ -47,14 +47,17 @@ Hardening (T7; ODD L11 a/b/c), all pinned in tests/test_bot_flow.py:
 Secrets: PATs are validated, Fernet-encrypted and the capture message is
 flagged for deletion; plaintext tokens never appear in replies or audit.
 
-flow-interrupt-rearm (S1-S3): while a resource is active, ANY text update is
-first answered with the Continue/Cancel prompt (``FLOW_INTERRUPTED`` +
-``ResumeKB``) instead of being processed — except the ✏️/🏷️ paste-back, whose
-button press already armed it. ▶️ Continue ("keep") re-sends the current
-step's message (:meth:`ResourceFlow.handle_resume`) and arms the user
-(app/bot/rearm.py) so exactly the next text lands in the per-state dispatch;
-rejections that re-ask the same text step keep the arm, any other button
-press drops it, and /start during a flow shows the same prompt.
+flow-interrupt-rearm (S1, S2, S4/S5 — user-corrected): the step the flow
+waits on decides how a text update is read. Text-driven steps (PAT, summary,
+interview answers, the ✏️/🏷️ paste-back while its marker is set) consume the
+next message directly — the prompt must never interrupt them. A text a
+BUTTON-driven step cannot use (candidate/folder picker, confirmation card
+without a pending edit, NEW) is answered with the Continue/Cancel prompt
+(``FLOW_INTERRUPTED`` + ``ResumeKB``) and never processed. ▶️ Continue
+("keep") re-sends the current step's message (:meth:`ResourceFlow.handle_resume`);
+the unreliable-placement context-retry is button-gated too: its invite is
+armed by ``_no_candidates_step`` and ends on any button press (S5). /start
+during a flow offers the same two buttons.
 """
 
 from __future__ import annotations
@@ -299,13 +302,14 @@ DECRYPT_FAILED = (
 )
 UNKNOWN_CALLBACK = "That button is no longer available — /start or send the link again."
 COMMIT_PUBLIC_REMINDER = " Remember: all links must be public."
-# flow-interrupt-rearm (S1): shown for ANY text update while a flow is active;
-# the buttons decide — ▶️ Continue re-sends the step, ❌ Cancel drops it.
+# flow-interrupt-rearm (S1 + S4): shown for a text update the CURRENT step
+# cannot use (button-driven steps); the buttons decide — ▶️ Continue re-sends
+# the step's message, ❌ Cancel drops it.
 FLOW_INTERRUPTED = (
-    "⏸️ You have a flow in progress, so I did not treat that message as an "
-    "answer. Press ▶️ Continue to pick up where you left off — your next "
-    "message will answer the current step — or ❌ Cancel to drop this "
-    "resource (or use /cancel anytime)."
+    "⏸️ The step I am waiting on is driven by buttons, so I did not treat "
+    "that message as an answer. Press ▶️ Continue to re-send the current "
+    "step's message (its card may also invite a text reply), or ❌ Cancel "
+    "to drop this resource (or use /cancel anytime)."
 )
 
 # --- keyboard specs (plain data; handlers render them via app.bot.keyboards) - #
@@ -513,20 +517,19 @@ class ResourceFlow:
 
         state = active.state
         if state == "CONFIRMING" and pending_edits.get_marker(active.id) is not None:
-            # T4/S6.3 + flow-interrupt-rearm S3: the ✏️/🏷️ press already
-            # armed this exact paste-back; it never goes through the guard.
+            # T4/S6.3 + flow-interrupt-rearm S4: the ✏️/🏷️ press already
+            # asked for this exact paste-back; it never goes through the gate.
             return await self._handle_confirming_text(user_id, active, text)
-        if not rearm.is_armed(user_id):
-            # S1: any text while a flow is in progress asks Continue/Cancel
-            # first; the message itself is deliberately not processed.
+        if not self._step_takes_text(active) and not rearm.is_armed(user_id):
+            # S1 + S4: ONLY a text the current step cannot use asks Continue/
+            # Cancel first; the message itself is deliberately not processed.
             await self._log("flow_interrupted", user_id, active.id, detail=f"state={state}")
             return FlowResult((FLOW_INTERRUPTED,), ResumeKB())
-        rearm.disarm(user_id)  # S3: the arm pays for exactly one answer
+        rearm.disarm(user_id)  # S5: an armed button-step ask pays for one message
         if state == "NEED_TOKEN":
             if looks_like_token(text):
                 return await self._capture_pat(user_id, text.strip(), resume=active, progress=progress)
             await self._log("pat_reasked", user_id, active.id)
-            rearm.arm(user_id)  # the same step is re-asked -> stays armed
             return FlowResult((PAT_STILL_NEEDED,))
         if state == "NEED_SUMMARY":
             return await self._record_summary(user_id, active, text, progress)
@@ -542,6 +545,27 @@ class ResourceFlow:
             return await self._handle_confirming_text(user_id, active, text)
         # Anything unexpected: buttons drive the next step.
         return FlowResult((CONFIRMING_HINT,))
+
+    def _step_takes_text(self, resource: Any) -> bool:
+        """S4 (flow-interrupt-rearm, user-corrected): does the waiting step take text?
+
+        Text-driven steps — the PAT, the summary, every interview answer, and the
+        ✏️/🏷️ paste-back while its marker is set — consume the next message as
+        their answer directly: the Continue/Cancel prompt must NEVER interrupt
+        them. Button-driven steps (the candidate/folder picker, the confirmation
+        card without a pending edit, NEW) never guess: stray text there asks
+        first. The unreliable-placement retry belongs to the second group: its
+        invite is armed by ``_no_candidates_step`` and ends on any button press
+        (unreliable-decision-retry + S5), so it flows through the arm gate.
+        """
+        state = resource.state
+        if state in ("NEED_TOKEN", "NEED_SUMMARY"):
+            return True
+        if state == "AWAITING_ENTRY_INFO":
+            return self._derive_step(resource, _load_iv(resource.entry_line)) != "folder"
+        if state == "CONFIRMING":
+            return pending_edits.get_marker(resource.id) is not None
+        return False
 
     async def handle_callback(
         self,
@@ -629,18 +653,18 @@ class ResourceFlow:
     # -- resume (flow-interrupt-rearm, S2) ---------------------------------------- #
 
     async def handle_resume(self, user_id: int) -> FlowResult:
-        """▶️ Continue: re-send the current step's message and re-arm the ask.
+        """▶️ Continue: re-send the current step's message (S2).
 
-        Text-input states arm the user so exactly the next text update is the
-        answer; button-driven states stay guarded until a button (or another
-        Continue) moves them. A stale press (no active resource) is audited.
+        Text-driven steps need no arming — their next message is already the
+        answer (S4). Continue matters at button-driven steps: it re-shows the
+        picker or card, and for the unreliable-placement ask it re-arms the
+        context-retry invite through ``_no_candidates_step`` (S5). A stale
+        press (no active resource) is audited.
         """
         resource = await self._active(user_id)
         if resource is None:
             await self._log("resume_stale", user_id)
             return FlowResult((NOTHING_PENDING,))
-        if resource.state in ("NEED_TOKEN", "NEED_SUMMARY", "AWAITING_ENTRY_INFO"):
-            rearm.arm(user_id)
         await self._log("flow_resumed", user_id, resource.id, detail=f"state={resource.state}")
         return await self._current_step_message(user_id, resource)
 
@@ -691,8 +715,6 @@ class ResourceFlow:
             enc = encrypt_pat(self.deps.settings, token)
         except ValueError:
             await self._log("pat_invalid", user_id)
-            if resume is not None:
-                rearm.arm(user_id)  # the NEED_TOKEN step is re-asked -> stays armed
             return FlowResult((PAT_STILL_NEEDED,))
         await save_github_token(self.deps.conn, user_id, enc)
         await self._log("pat_captured", user_id, detail=mask(token))
@@ -815,7 +837,6 @@ class ResourceFlow:
     ) -> FlowResult:
         summary = sanitize_line(text, SUMMARY_MAX_CHARS)
         if not summary:
-            rearm.arm(user_id)  # the same step is re-asked -> stays armed
             return FlowResult((ASK_SUMMARY,))
         await set_resource_state(self.deps.conn, resource.id, "NEW", context=summary)
         await self._log("summary_stored", user_id, resource.id)
@@ -896,7 +917,8 @@ class ResourceFlow:
 
         Full picker page 0 plus the context invite, and the user is armed so
         exactly the next text update re-runs the classification with it; any
-        button press drops the arm (flow-interrupt-rearm S3 still holds).
+        button press ends the invite (flow-interrupt-rearm S5), and ▶️
+        Continue re-offers this step with the invite armed again.
         """
         rearm.arm(user_id)
         folders = sorted(self.deps.settings.categories)
@@ -1032,7 +1054,6 @@ class ResourceFlow:
         if step == "context":
             value = sanitize_line(raw, SUMMARY_MAX_CHARS)
             if not value:
-                rearm.arm(user_id)  # the same step is re-asked -> stays armed
                 return FlowResult((ASK_CONTEXT,))
             await set_resource_state(self.deps.conn, resource.id, "AWAITING_ENTRY_INFO", context=value)
             return await self._advance(user_id, resource.id)
@@ -1044,7 +1065,6 @@ class ResourceFlow:
             value = raw.lower()
             if value not in ENTRY_TYPES:
                 await self._log("entry_rejected", user_id, resource.id, detail="field=type")
-                rearm.arm(user_id)  # the same step is re-asked -> stays armed
                 return FlowResult((INVALID_TYPE,), TypeKB())
             return await self._answer_field(user_id, resource, iv, "type", value)
         if step == "platforms":
@@ -1056,7 +1076,6 @@ class ResourceFlow:
                 tag = sanitize_line(token, 40)
                 if not tag or any(ch in _PLATFORM_UNSAFE for ch in tag):
                     await self._log("entry_rejected", user_id, resource.id, detail="field=platforms")
-                    rearm.arm(user_id)  # the same step is re-asked -> stays armed
                     return FlowResult((ASK_PLATFORMS,))
                 cleaned.append(tag.lower())
             return await self._answer_field(user_id, resource, iv, "platforms", cleaned)
@@ -1069,7 +1088,6 @@ class ResourceFlow:
         value = sanitize_line(raw, limit)
         if not value or any(ch in value for ch in ("[", "]", "`")):
             await self._log("entry_rejected", user_id, resource.id, detail=f"field={field_name}")
-            rearm.arm(user_id)  # the same step is re-asked -> stays armed
             return FlowResult((INVALID_FIELD.format(label=field_name.capitalize()),))
         return await self._answer_field(user_id, resource, iv, field_name, value)
 

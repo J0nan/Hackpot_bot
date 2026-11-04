@@ -171,7 +171,6 @@ async def _to_confirming(h, url: str = URL):
     await flow.handle_text(USER, "verifier", url)
     await flow.handle_folder_choice(USER, CHOSEN)
     await flow.handle_callback(USER, "verifier", "tool")
-    await flow.handle_callback(USER, "verifier", "keep")  # arm the platforms step (S3)
     await flow.handle_text(USER, "verifier", "linux")
     return await _rid(h)
 

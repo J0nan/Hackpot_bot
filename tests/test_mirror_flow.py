@@ -153,7 +153,6 @@ async def _to_confirming(h: dict) -> ResourceFlow:
     flow = await _to_placement(h)
     await flow.handle_folder_choice(USER, CHOSEN)
     await flow.handle_callback(USER, "jonan", "tool")
-    await flow.handle_callback(USER, "jonan", "keep")  # arm the platforms step (S3)
     await flow.handle_text(USER, "jonan", "linux")
     return flow
 

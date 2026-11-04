@@ -285,9 +285,10 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
         ▼
  commit URL + audit rows in SQLite (resumes where it stopped after a restart)
 
- guard, every step above: while a flow is in progress ANY text message asks
- "⏸️ ▶️ Continue / ❌ Cancel" instead of being guessed at — Continue re-sends
- the current step's message and your next message is its answer.
+ guard, every step above: text typed WHERE THE STEP TAKES TEXT (token, summary,
+ interview, ✏️/🏷️ paste-back, the "add context" retry ask) is that step's answer
+ directly. At button-driven steps a stray text asks "⏸️ ▶️ Continue / ❌ Cancel"
+ instead of being guessed at — Continue re-sends the current step's message.
 ```
 
 ---
@@ -298,13 +299,16 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
   message; the bot encrypts it and deletes your message.
 - **Send a link** — exactly one `https` URL per message. GitHub repos are read
   automatically; anything else gets a summary question.
-- **Mid-flow text guard** — while a resource flow is in progress, **any text
-  you send** gets a "⏸️ Continue or Cancel?" prompt instead of being guessed at.
-  **▶️ Continue** re-sends the current step's message and your next message is
-  its answer (a rejected answer re-asks the same step without another press);
-  **❌ Cancel** (or `/cancel`) drops the resource. Buttons — and the ✏️/🏷️
-  paste-back right after pressing one — are never guarded. The armed answer is
-  process-local: a restart drops it and the prompt simply returns.
+- **Mid-flow text guard** — when the step the flow waits on takes a text answer
+  (GitHub token, summary, interview questions, the ✏️/🏷️ paste-back right after
+  pressing one, the "add context" retry at an unreliable decision), your message
+  **is that answer — no prompt**. Only at **button-driven steps** (folder picker,
+  confirmation card) does typed text get a "⏸️ Continue or Cancel?" prompt instead
+  of being guessed at: **▶️ Continue** re-sends the current step's message,
+  **❌ Cancel** (or `/cancel`) drops the resource. A rejected text answer simply
+  re-asks its step. The retry invite at an unreliable decision is one-shot:
+  browsing the picker with buttons ends it (Continue re-offers it), and a restart
+  drops it.
 - **Pick a folder** — the candidate buttons show the model's confidence; `📂 Other folder…`
   lists every configured leaf, paged, so you can always override the decision. Arbitrary
   paths are never accepted. If no folder clears the confidence bar, the bot tells you the

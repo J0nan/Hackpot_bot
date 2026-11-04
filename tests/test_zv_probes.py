@@ -202,7 +202,6 @@ async def test_s1_edit_keypress_in_other_states_is_unknown_callback_audited(h: d
 
     # S6.1/S6.7: the removed "e" payload now lands in the same tail while CONFIRMING.
     await flow.handle_callback(USER, "jonan", "tool")
-    await flow.handle_callback(USER, "jonan", "keep")  # arm the platforms step (S3)
     await flow.handle_text(USER, "jonan", "linux")  # -> CONFIRMING
     result = await flow.handle_callback(USER, "jonan", "e")
     assert result.replies == (UNKNOWN_CALLBACK,)

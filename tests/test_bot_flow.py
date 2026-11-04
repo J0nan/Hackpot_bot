@@ -22,7 +22,6 @@ from cryptography.fernet import Fernet
 
 from app.bot import handlers, pending_edits, rearm
 from app.bot.flow import (
-    ASK_NAME,
     ASK_PLATFORMS,
     ASK_SUMMARY,
     AppDeps,
@@ -218,8 +217,7 @@ async def _capture_token(h: dict) -> None:
 
 
 async def _answer(flow: ResourceFlow, text: str, **kw: Any) -> Any:
-    """S3 (flow-interrupt-rearm): ▶️ Continue arms the step; the text is its answer."""
-    await flow.handle_callback(USER, "jonan", "keep")
+    """S4 (revised): text at a text-driven step is its answer — no Continue needed."""
     return await flow.handle_text(USER, "jonan", text, **kw)
 
 
@@ -236,7 +234,6 @@ async def _to_confirming(h: dict) -> tuple[ResourceFlow, Any]:
     await flow.handle_folder_choice(USER, CHOSEN)
     # github kind pre-fills name/description from repo meta (no cost step: S2)
     await flow.handle_callback(USER, "jonan", "tool")  # type step
-    await flow.handle_callback(USER, "jonan", "keep")  # arm the platforms ask (S3)
     result = await flow.handle_text(USER, "jonan", "linux")  # platforms -> preview
     return flow, result
 
@@ -324,12 +321,12 @@ async def test_link_before_token_parks_resource_then_resumes_after_capture(h: di
     active = await get_active_resource_for_user(h["conn"], USER)
     assert active is not None and active.state == "NEED_TOKEN" and active.kind == "github"
 
-    result = await _answer(flow, "I do not have one yet")  # keep arms the NEED_TOKEN ask
+    result = await _answer(flow, "I do not have one yet")  # NEED_TOKEN is a text step
     assert "token" in "\n".join(result.replies).lower()
     active = await get_active_resource_for_user(h["conn"], USER)
     assert active.state == "NEED_TOKEN"
 
-    # the rejection re-asked the same step, so it is still armed: the PAT lands.
+    # the step still wants text, so the PAT lands with no Continue press (S4).
     result = await flow.handle_text(USER, "jonan", VALID_PAT)
     assert result.delete_message is True
     assert h["github_tokens"][0] == VALID_PAT  # fetch used the sender's own PAT
@@ -420,7 +417,7 @@ async def test_summary_path_records_context_then_classifies(h: dict) -> None:
     assert result.replies
     assert (await get_active_resource_for_user(h["conn"], USER)).state == "NEED_SUMMARY"
 
-    await _answer(flow, "An offline wordlist generator for fuzzing.")  # keep + summary
+    await _answer(flow, "An offline wordlist generator for fuzzing.")  # direct (S4)
     call = h["decision"].calls[-1]
     assert "https://cool-labs.io/tool" in call["content"]
     assert "wordlist generator" in call["content"]
@@ -622,20 +619,20 @@ async def test_interview_step_derivation_and_bracket_rejection(h: dict) -> None:
     flow = await _to_interview(h)
 
     # First empty field is name: a bracketed name must be refused, storing nothing.
-    result = await _answer(flow, "Bad]Name")  # keep arms the name step first
+    result = await _answer(flow, "Bad]Name")  # name is a text step (S4)
     assert "[" in result.replies[0] or "]" in result.replies[0] or "bracket" in result.replies[0].lower()
     resource = await get_resource(h["conn"], await _active_id(h))
     assert json.loads(resource.entry_line) == {}  # rejected input stored nothing
     assert await _audit(h, "entry_rejected")
 
-    result = await flow.handle_text(USER, "jonan", "SQLMap")  # rejection re-armed the step
+    result = await flow.handle_text(USER, "jonan", "SQLMap")  # the step keeps taking text
     assert "description" in "\n".join(result.replies).lower()
 
-    result = await _answer(flow, "evil `backtick` thing")  # description asks a fresh keep
+    result = await _answer(flow, "evil `backtick` thing")  # description step, direct
     assert "backtick" in "\n".join(result.replies).lower() or "`" in result.replies[0]
 
-    await flow.handle_text(USER, "jonan", "Dumps database banners")  # still armed
-    result = await _answer(flow, "banana")  # invalid type (description answer consumed the arm)
+    await flow.handle_text(USER, "jonan", "Dumps database banners")  # still a text step
+    result = await _answer(flow, "banana")  # invalid type at the type step
     assert isinstance(result.keyboard, TypeKB)
 
     await flow.handle_callback(USER, "jonan", "tool")
@@ -643,7 +640,7 @@ async def test_interview_step_derivation_and_bracket_rejection(h: dict) -> None:
     assert result.replies == (UNKNOWN_CALLBACK,)  # ignored, audited, not an error state
     assert await _audit(h, "callback_ignored")
 
-    result = await _answer(flow, "linux")  # the button press cleared the old arm
+    result = await _answer(flow, "linux")  # platforms is a text step too (S4)
     assert isinstance(result.keyboard, ConfirmKB)
     resource = await get_resource(h["conn"], await _active_id(h))
     assert resource.state == "CONFIRMING"
@@ -688,7 +685,7 @@ async def test_platforms_reject_backtick_tokens(h: dict) -> None:
     result = await _answer(flow, "linux `evil`")
     resource = await get_resource(h["conn"], await _active_id(h))
     assert resource.state == "AWAITING_ENTRY_INFO"  # refused, still asking platforms
-    assert result.replies == (ASK_PLATFORMS,)  # rejection re-arms: retry needs no keep
+    assert result.replies == (ASK_PLATFORMS,)  # rejection just re-asks the step (S4)
 
 
 async def test_resume_finds_mid_interview_resource(h: dict) -> None:
@@ -1159,7 +1156,7 @@ async def test_analyzing_progress_is_sent_once_per_decision_call(h: dict) -> Non
     await flow.handle_text(USER, "jonan", "https://cool-labs.io/tool")  # intake -> ASK_SUMMARY
     assert sent == []
 
-    # the summary is a NEED_SUMMARY step answer: Continue arms it (S3)
+    # the summary is a NEED_SUMMARY step answer: it lands directly (S4)
     result = await _answer(flow, "Fuzzing wordlist generator.", progress=sink)
     assert sent == [ANALYZING_TEXT]
     assert isinstance(result.keyboard, CandidatesKB)
@@ -1526,7 +1523,7 @@ async def test_cmd_stats_handler_sends_both_boards(h: dict) -> None:
     assert message.answers[1].startswith("🏷️") and "linux — 1 link" in message.answers[1]
 
 
-# --------------------------------------------------- flow-interrupt-rearm (S1-S3)
+# ----------------------------------------------- flow-interrupt-rearm (S1, S2, S4)
 
 
 async def _to_summary(h: dict) -> ResourceFlow:
@@ -1538,32 +1535,59 @@ async def _to_summary(h: dict) -> ResourceFlow:
     return flow
 
 
-async def test_text_during_active_flow_asks_continue_or_cancel(h: dict) -> None:
-    """S1: any text while a flow is in progress gets the prompt, not processing."""
+async def test_text_at_a_text_step_is_the_answer_directly(h: dict) -> None:
+    """S4: a text-driven step (summary here) takes the message — NO Continue press."""
     flow = await _to_summary(h)
-    result = await flow.handle_text(USER, "jonan", "A fuzzing wordlist tool.")
+    result = await flow.handle_text(USER, "jonan", "An offline wordlist generator.")
+    assert "folder(s)" in result.replies[0]  # the decision ran immediately
+    assert not await _audit(h, "flow_interrupted")
+
+
+async def test_optional_tags_are_accepted_without_the_prompt(h: dict) -> None:
+    """S4 user-report pin: platform tags typed at their step just land."""
+    flow = await _to_interview(h)
+    await flow.handle_text(USER, "jonan", "Name")
+    await flow.handle_text(USER, "jonan", "Description")
+    await flow.handle_callback(USER, "jonan", "tool")  # type step by button
+    result = await flow.handle_text(USER, "jonan", "linux docker")
+    assert isinstance(result.keyboard, ConfirmKB)  # straight to the preview
+    assert not await _audit(h, "flow_interrupted")
+
+
+async def test_text_during_button_step_asks_continue_or_cancel(h: dict) -> None:
+    """S1 + S4: a text the current step cannot use gets the prompt, unprocessed."""
+    flow = await _to_placement(h)  # AWAITING_PLACEMENT (candidates card)
+    result = await flow.handle_text(USER, "jonan", "just text")
     assert result.replies == (FLOW_INTERRUPTED,)
     assert isinstance(result.keyboard, ResumeKB)
     resource = await get_resource(h["conn"], await _active_id(h))
-    assert resource.state == "NEED_SUMMARY"
-    assert not resource.context  # the stray text was NOT recorded as the summary
+    assert resource.state == "AWAITING_PLACEMENT" and not resource.folder
     assert await _audit(h, "flow_interrupted")
 
 
-async def test_continue_resends_current_step_and_next_text_answers(h: dict) -> None:
-    """S2/S3: Continue re-sends the step message; the next text is its answer."""
-    flow = await _to_summary(h)
+async def test_continue_resends_the_current_step_message(h: dict) -> None:
+    """S2: Continue re-sends the step message; a button step stays button-driven."""
+    flow = await _to_placement(h)
     await flow.handle_text(USER, "jonan", "noise")  # -> prompt
+    resumed = await flow.handle_callback(USER, "jonan", "keep")
+    assert isinstance(resumed.keyboard, FoldersKB)  # placement step re-sent
+    assert await _audit(h, "flow_resumed")
+    again = await flow.handle_text(USER, "jonan", "more text")
+    assert again.replies == (FLOW_INTERRUPTED,)
+
+
+async def test_continue_at_a_text_step_re_asks_it_and_text_still_lands(h: dict) -> None:
+    """S2 + S4: Continue also re-sends a text ask; answers work with or without it."""
+    flow = await _to_summary(h)
     resumed = await flow.handle_callback(USER, "jonan", "keep")
     assert resumed.replies == (ASK_SUMMARY,)
     result = await flow.handle_text(USER, "jonan", "An offline wordlist generator.")
-    assert "folder(s)" in result.replies[0]  # the decision ran: intake resumed
-    assert await _audit(h, "flow_resumed")
+    assert "folder(s)" in result.replies[0]
 
 
 async def test_cancel_from_the_prompt_drops_the_resource(h: dict) -> None:
     """S1: the ❌ button on the prompt is the cancel choice."""
-    flow = await _to_summary(h)
+    flow = await _to_placement(h)
     await flow.handle_text(USER, "jonan", "noise")
     result = await flow.handle_callback(USER, "jonan", "❌")
     assert result.replies == (CANCELLED_MSG,)
@@ -1583,45 +1607,23 @@ async def test_start_with_active_flow_offers_the_buttons(h: dict) -> None:
     assert plain.keyboard is None
 
 
-async def test_button_steps_are_not_armed_by_continue(h: dict) -> None:
-    """S3: placement is button-driven — Continue re-sends the picker but stays guarded."""
-    flow = await _to_placement(h)  # AWAITING_PLACEMENT (candidates card)
-    result = await flow.handle_text(USER, "jonan", "just text")
-    assert result.replies == (FLOW_INTERRUPTED,)
-    resumed = await flow.handle_callback(USER, "jonan", "keep")
-    assert isinstance(resumed.keyboard, FoldersKB)  # the placement step re-sent
-    again = await flow.handle_text(USER, "jonan", "more text")
-    assert again.replies == (FLOW_INTERRUPTED,)
-
-
-async def test_rejected_answer_stays_armed_for_retry(h: dict) -> None:
-    """A rejection re-asks the same step; the retry lands without another keep."""
-    flow = await _to_interview(h)  # AWAITING_ENTRY_INFO, name step, no pre-fills
-    resumed = await flow.handle_callback(USER, "jonan", "keep")
-    assert resumed.replies == (ASK_NAME,)
+async def test_rejected_answer_just_reasks_without_the_prompt(h: dict) -> None:
+    """S4: a rejection re-asks its own step; the retry lands directly."""
+    flow = await _to_interview(h)  # name step, no pre-fills
     result = await flow.handle_text(USER, "jonan", "Bad]Name")
     assert "[" in result.replies[0] or "]" in result.replies[0]  # INVALID_FIELD
-    result = await flow.handle_text(USER, "jonan", "SQLMap")  # retry, no re-keep
+    result = await flow.handle_text(USER, "jonan", "SQLMap")  # retry, straight through
     assert "description" in "\n".join(result.replies).lower()
 
 
-async def test_any_button_press_clears_the_armed_answer(h: dict) -> None:
-    """A button press replaces the armed ask: the next text is guarded again."""
-    flow = await _to_interview(h)
-    await flow.handle_callback(USER, "jonan", "keep")  # armed for the name answer
-    await flow.handle_callback(USER, "jonan", "tool")  # stray press (name step)
-    result = await flow.handle_text(USER, "jonan", "SQLMap")
-    assert result.replies == (FLOW_INTERRUPTED,)
-
-
-async def test_confirming_paste_back_needs_no_extra_continue(h: dict) -> None:
-    """The ✏️/🏷️ press already armed the paste: only stray CONFIRMING text is guarded."""
+async def test_confirming_paste_back_after_the_marker_press(h: dict) -> None:
+    """The ✏️/🏷️ ask takes its paste; only stray CONFIRMING text is guarded."""
     flow, _ = await _to_confirming(h)
     stray = await flow.handle_text(USER, "jonan", "stray text")
-    assert stray.replies == (FLOW_INTERRUPTED,)  # no marker -> guarded
-    await flow.handle_callback(USER, "jonan", "d")  # marker == armed
+    assert stray.replies == (FLOW_INTERRUPTED,)  # no marker -> button step
+    await flow.handle_callback(USER, "jonan", "d")  # the edit ask takes the next text
     result = await flow.handle_text(USER, "jonan", "A superb recon tool")
-    assert result.replies[0].startswith(PREVIEW)  # accepted straight through
+    assert result.replies[0].startswith(PREVIEW)  # accepted directly
 
 
 async def test_keep_without_active_flow_says_nothing_pending(h: dict) -> None:
