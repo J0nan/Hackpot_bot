@@ -78,15 +78,15 @@ def body_of(recorder: Recorder, index: int) -> dict[str, Any]:
 @pytest.mark.parametrize(
     "url,expected",
     [
-        ("https://github.com/HackPot-HQ/Hackpot", ("J0nan", "Hackpot")),
-        ("https://www.github.com/HackPot-HQ/Hackpot", ("J0nan", "Hackpot")),
-        ("https://github.com/HackPot-HQ/Hackpot/", ("J0nan", "Hackpot")),
-        ("https://github.com/HackPot-HQ/Hackpot.git", ("J0nan", "Hackpot")),
-        ("https://github.com/HackPot-HQ/Hackpot/tree/main/01_Recon/README.md", ("J0nan", "Hackpot")),
-        ("https://github.com/HackPot-HQ/Hackpot/blob/main/README.md#usage", ("J0nan", "Hackpot")),
-        ("https://github.com/HackPot-HQ/Hackpot/issues/3", ("J0nan", "Hackpot")),
-        ("https://github.com/HackPot-HQ/Hackpot?ref=1", ("J0nan", "Hackpot")),
-        ("HTTPS://GitHub.COM/HackPot-HQ/Hackpot", ("J0nan", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot", ("HackPot-HQ", "Hackpot")),
+        ("https://www.github.com/HackPot-HQ/Hackpot", ("HackPot-HQ", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot/", ("HackPot-HQ", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot.git", ("HackPot-HQ", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot/tree/main/01_Recon/README.md", ("HackPot-HQ", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot/blob/main/README.md#usage", ("HackPot-HQ", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot/issues/3", ("HackPot-HQ", "Hackpot")),
+        ("https://github.com/HackPot-HQ/Hackpot?ref=1", ("HackPot-HQ", "Hackpot")),
+        ("HTTPS://GitHub.COM/HackPot-HQ/Hackpot", ("HackPot-HQ", "Hackpot")),
         ("https://GitHub.com/MixedCase/RepoName", ("MixedCase", "RepoName")),
         ("https://github.com/a.b/c-d_e.git", ("a.b", "c-d_e")),
         ("https://www.GitHub.com/x/y/", ("x", "y")),
@@ -598,7 +598,7 @@ def test_leaf_title_from_path() -> None:
 async def test_headers_always_include_api_contract() -> None:
     recorder = Recorder([(200, {"full_name": TARGET})])
     client = client_for(recorder, token=None)
-    await client.repo_meta("J0nan", "Hackpot")
+    await client.repo_meta("HackPot-HQ", "Hackpot")
     request = recorder.requests[0]
     assert request.headers["Accept"] == "application/vnd.github+json"
     assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
@@ -609,10 +609,10 @@ async def test_headers_always_include_api_contract() -> None:
 async def test_bearer_header_only_with_token() -> None:
     recorder = Recorder([(200, {}), (200, {})])
     client = client_for(recorder, token=TOKEN)
-    await client.repo_meta("J0nan", "Hackpot")
+    await client.repo_meta("HackPot-HQ", "Hackpot")
     assert recorder.requests[0].headers["Authorization"] == f"Bearer {TOKEN}"
     no_token = client_for(Recorder([(200, {})]), token=None)
-    await no_token.repo_meta("J0nan", "Hackpot")
+    await no_token.repo_meta("HackPot-HQ", "Hackpot")
 
 
 async def test_default_target_is_hackpot() -> None:
@@ -652,7 +652,7 @@ async def test_repo_meta_happy() -> None:
         ]
     )
     client = client_for(recorder)
-    meta = await client.repo_meta("J0nan", "Hackpot")
+    meta = await client.repo_meta("HackPot-HQ", "Hackpot")
     assert recorder.paths == ["https://api.github.com/repos/HackPot-HQ/Hackpot"]
     assert meta == {
         "description": "Pentest resources",
@@ -672,7 +672,7 @@ async def test_repo_meta_404_asks_user_and_reminds_public() -> None:
     recorder = Recorder([(404, {"message": "Not Found", "documentation_url": "https://docs.github.com"})])
     client = client_for(recorder)
     with pytest.raises(FetchError) as excinfo:
-        await client.repo_meta("J0nan", "private-repo")
+        await client.repo_meta("HackPot-HQ", "private-repo")
     message = str(excinfo.value)
     assert excinfo.value.public_hint is True
     assert "public" in message.lower()
@@ -685,7 +685,7 @@ async def test_readme_decodes_base64_unicode() -> None:
     body = "# Hackpot\n\nHerramientas de pentesting — éè ñ U+00E9 and emoji: \U0001f9ea\n"
     recorder = Recorder([(200, {"name": "README.md", "content": b64(body), "encoding": "base64"})])
     client = client_for(recorder)
-    assert await client.readme("J0nan", "Hackpot") == body
+    assert await client.readme("HackPot-HQ", "Hackpot") == body
     assert recorder.paths == ["https://api.github.com/repos/HackPot-HQ/Hackpot/readme"]
 
 
@@ -693,7 +693,7 @@ async def test_readme_error_is_fetch_error_with_public_hint() -> None:
     recorder = Recorder([(451, {"message": "Forbidden"})])
     client = client_for(recorder)
     with pytest.raises(FetchError) as excinfo:
-        await client.readme("J0nan", "blocked")
+        await client.readme("HackPot-HQ", "blocked")
     assert excinfo.value.public_hint is True
     assert "public" in str(excinfo.value).lower()
 
@@ -702,7 +702,7 @@ async def test_readme_unauthorized_message_mentions_token() -> None:
     recorder = Recorder([(401, {"message": "Bad credentials"})])
     client = client_for(recorder)
     with pytest.raises(FetchError) as excinfo:
-        await client.readme("J0nan", "Hackpot")
+        await client.readme("HackPot-HQ", "Hackpot")
     message = str(excinfo.value)
     assert "token" in message.lower()
     assert TOKEN not in message

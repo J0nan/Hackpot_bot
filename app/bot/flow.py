@@ -159,7 +159,8 @@ ASK_PAT_START = (
     "    - Select 'Only selected repositories' and choose the 'Hackpot' repo on the Repository access.\n"
     "    - Under 'Repository permissions', select 'Add permissions' then add 'Contents' and set it to 'Read and write'.\n\n"
     "Generate the token, copy it, and send it to me as one bare message.\n"
-    "I will store it encrypted. It is used to commit the resource under your own GitHub account."
+    "I will store it encrypted. It is used to commit the resource under your own GitHub account.\n"
+    "Remember: all links must be public."
 )
 GREETING_READY = (
     "👋 Welcome back! Send the https link of the resource you want indexed. GitHub "
@@ -182,7 +183,8 @@ NEED_TOKEN_FOR_LINK = (
     "    - Select 'Only selected repositories' and choose the 'Hackpot' repo on the Repository access.\n"
     "    - Under 'Repository permissions', select 'Add permissions' then add 'Contents' and set it to 'Read and write'.\n\n"
     "Generate the token, copy it, and send it to me as one bare message.\n"
-    "I will store it encrypted. It is used to commit the resource under your own GitHub account."
+    "I will store it encrypted. It is used to commit the resource under your own GitHub account.\n"
+    "Remember: all links must be public."
 )
 USAGE_HINT = (
     "Send exactly one https link (for example https://github.com/owner/repo). For a "
