@@ -267,7 +267,8 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
  decision model over CATEGORIES_JSON ──▶ candidate buttons (probability ≥ threshold,
         top MAX_CANDIDATES_SHOWN) + "📂 Other folder…" (every configured leaf, paged)
             │ no folder clears the bar: the bot says the model was not reliable,
-            │ lists every folder at once, and one text message adds context → re-classify
+            │ lists every folder at once, and one text message adds context → re-classify;
+            │ 🛠️ Manual classify (ends the text invite) / ❌ Cancel ride on every page
         │
         ▼
  entry interview: name → description → type → platforms  (GitHub metadata prefilled)
@@ -313,9 +314,12 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
   lists every configured leaf, paged, so you can always override the decision. Arbitrary
   paths are never accepted. If no folder clears the confidence bar — or the model call
   fails outright after its internal retries — the bot tells you the model did not return
-  a reliable result, lists **every folder right away**, and invites one text message of
-  extra context — it is appended to the classification context and the model is asked
-  again (repeat until you're satisfied, or just pick a folder).
+  a reliable result, lists **every folder right away**, and gives three routes: send one
+  text message of extra context (appended to the classification context, the model is
+  asked again), press **🛠️ Manual classify** to take over — the text invite ends, later
+  text hits the normal Continue/Cancel guard and is never read as context, pick a folder
+  number to place it — or press **❌ Cancel** to drop the resource. The 🛠️/❌ offer stays
+  on every page of the picker while that step is live.
 - **Answer the interview** — display name, one-line description (what it does and why it
   matters), `type`, optional platform tags. `none` skips platforms.
 - **Confirm** — the preview shows the exact bullet; ✅ commits to `TARGET_BRANCH`, ❌ or

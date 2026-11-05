@@ -150,6 +150,15 @@ def test_folders_kb_page_zero_number_buttons_with_next() -> None:
     assert rows[-1] == [("Next ➡️", "p:1")]
 
 
+def test_folders_kb_manual_row_added_only_when_offered() -> None:
+    """unreliable-decision-retry: the ask carries 🛠️ Manual classify / ❌ Cancel."""
+    rows = _cells(folders_kb(FOLDERS, manual=True))
+    assert rows[-2:] == [[("🛠️ Manual classify", "m")], [("❌ Cancel", "❌")]]
+    assert [d for row in rows[:-2] for _, d in row] == [f"f:{i}" for i in range(3)]
+    plain = _cells(folders_kb(FOLDERS))
+    assert all("m" != d for row in plain for _, d in row)  # default picker unchanged
+
+
 def test_folders_kb_last_page_has_back_only() -> None:
     folders = _folders_12()
     rows = _cells(folders_kb(folders, page=1, size=10))

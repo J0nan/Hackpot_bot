@@ -72,7 +72,7 @@ import aiosqlite
 import httpx
 
 from app.config import Settings
-from app.bot import folder_picker, pending_edits, rearm
+from app.bot import folder_picker, manual_placement, pending_edits, rearm
 from app.db.database import ACTIVE_STATES
 from app.db.repository import (
     audit,
@@ -210,6 +210,10 @@ DECISION_UNRELIABLE_USER = (
     "suggested. Pick a folder below, or send a few words about this resource "
     "and I'll classify it again with that extra context."
 )
+MANUAL_PLACEMENT_NOTE = (
+    "🛠️ Manual classification it is — pick a folder by its number below. "
+    "Text messages no longer count as classification context for this resource."
+)
 PLACEMENT_HINT = (
     "Pick a destination folder — press its number above (📂 Other folder… "
     "lists every category)."
@@ -319,6 +323,7 @@ class CandidatesKB:
 @dataclass(frozen=True)
 class FoldersKB:
     page: int = 0
+    manual: bool = False  # unreliable-decision-retry S6: offer manual/cancel rows
 
 
 @dataclass(frozen=True)
@@ -530,7 +535,9 @@ class ResourceFlow:
         if state == "NEED_SUMMARY":
             return await self._record_summary(user_id, active, text, progress)
         if state == "AWAITING_PLACEMENT":
-            if await self._latest_decision_unreliable(active.id):
+            if await self._latest_decision_unreliable(active.id) and not (
+                manual_placement.is_marked(active.id)
+            ):
                 # unreliable-decision-retry S2: the armed text adds context and re-classifies
                 return await self._retry_with_context(user_id, active, text, progress)
             return FlowResult((PLACEMENT_HINT,))
@@ -592,6 +599,8 @@ class ResourceFlow:
             return await self.handle_folder_choice(user_id, folder)
         if data == "o":
             return await self.handle_more_folders(user_id, 0)
+        if data == "m":
+            return await self.handle_manual_classify(user_id)
         if data.startswith("p:"):
             page = self._parse_index(data)
             return await self.handle_more_folders(user_id, page if page is not None else 0)
@@ -676,9 +685,12 @@ class ResourceFlow:
                 return await self.handle_decision(user_id)  # decision not run yet
             return FlowResult((USAGE_HINT,))
         if state == "AWAITING_PLACEMENT":
-            if await self._latest_decision_unreliable(resource.id):
+            if (
+                await self._latest_decision_unreliable(resource.id)
+                and not manual_placement.is_marked(resource.id)
+            ):
                 # unreliable-decision-retry S4: the step re-shown is the ask as first shown
-                return await self._no_candidates_step(user_id)
+                return await self._no_candidates_step(user_id, resource.id)
             return await self.handle_more_folders(user_id)
         if state == "AWAITING_ENTRY_INFO":
             iv = _load_iv(resource.entry_line)
@@ -880,7 +892,7 @@ class ResourceFlow:
             _transition(resource.id, resource.state, "AWAITING_PLACEMENT")
             logger.warning("decision_failed res=%s: %s", resource.id, safe)
             await self._log("decision_failed", user_id, resource.id, detail=safe)
-            return await self._no_candidates_step(user_id)
+            return await self._no_candidates_step(user_id, resource.id)
 
         top = result.candidates[0] if result.candidates else None
         await record_decision(
@@ -911,7 +923,7 @@ class ResourceFlow:
         if not result.candidates:
             # unreliable-decision-retry: the model returned no usable value —
             # show every folder and invite a text message as extra context.
-            return await self._no_candidates_step(user_id)
+            return await self._no_candidates_step(user_id, resource.id)
         # Option B on the decision card: readable numbered caption, number buttons.
         replies.append(
             folder_picker.candidates_list_html(
@@ -924,19 +936,21 @@ class ResourceFlow:
             parse_mode=PARSE_HTML,
         )
 
-    async def _no_candidates_step(self, user_id: int) -> FlowResult:
+    async def _no_candidates_step(self, user_id: int, resource_id: int) -> FlowResult:
         """The ask shown when the model produced no candidate (unreliable-decision-retry S1).
 
-        Full picker page 0 plus the context invite, and the user is armed so
-        exactly the next text update re-runs the classification with it; any
-        button press ends the invite (flow-interrupt-rearm S5), and ▶️
-        Continue re-offers this step with the invite armed again.
+        Full picker page 0 plus the context invite and the 🛠️/❌ offer row; the
+        user is armed so exactly the next text update re-runs the classification
+        with it, any button press ends the invite (flow-interrupt-rearm S5), and
+        ▶️ Continue re-offers this step armed again — unless the resource was
+        already switched to manual placement (S6), which stays button-driven.
         """
-        rearm.arm(user_id)
-        folders = sorted(self.deps.settings.categories)
+        if not manual_placement.is_marked(resource_id):
+            rearm.arm(user_id)
+        step = await self.handle_more_folders(user_id, 0)
         return FlowResult(
-            (DECISION_UNRELIABLE_USER, folder_picker.folders_list_html(folders, 0)),
-            keyboard=FoldersKB(page=0),
+            (DECISION_UNRELIABLE_USER, *step.replies),
+            keyboard=step.keyboard,
             parse_mode=PARSE_HTML,
         )
 
@@ -962,7 +976,7 @@ class ResourceFlow:
         """
         extra = sanitize_line(text, SUMMARY_MAX_CHARS)
         if not extra:
-            return await self._no_candidates_step(user_id)
+            return await self._no_candidates_step(user_id, resource.id)
         base = resource.context or ""
         combined = f"{base}\n\n{extra}" if base else extra
         if len(combined) > _MAX_CONTEXT_CHARS:
@@ -977,12 +991,50 @@ class ResourceFlow:
     # -- placement ---------------------------------------------------------------- #
 
     async def handle_more_folders(self, user_id: int, page: int = 0) -> FlowResult:
-        """Numbered picker: full readable paths in an HTML caption, numbers as buttons."""
+        """Numbered picker: full readable paths in an HTML caption, numbers as buttons.
+
+        While the unreliable-decision step is live (placement pending, no
+        candidate, manual not chosen yet) the 🛠️/❌ offer rides on EVERY page,
+        so paging through the list never hides the manual route.
+        """
         page = max(0, int(page))
         folders = sorted(self.deps.settings.categories)
+        manual = False
+        resource = await self._active(user_id)
+        if (
+            resource is not None
+            and resource.state == "AWAITING_PLACEMENT"
+            and not manual_placement.is_marked(resource.id)
+            and await self._latest_decision_unreliable(resource.id)
+        ):
+            manual = True
         return FlowResult(
             (folder_picker.folders_list_html(folders, page),),
-            keyboard=FoldersKB(page=page),
+            keyboard=FoldersKB(page=page, manual=manual),
+            parse_mode=PARSE_HTML,
+        )
+
+    async def handle_manual_classify(self, user_id: int) -> FlowResult:
+        """unreliable-decision-retry S6: the user takes folder placement over.
+
+        Marks the resource (process-local, app/bot/manual_placement.py) so the
+        text-context invite is ended: later text is a stray message the
+        flow-interrupt gate guards, never classification context. The plain
+        picker is re-offered and the press itself already disarmed any armed
+        ask (handle_callback disarms every press). Valid only while placement
+        is pending.
+        """
+        resource = await self._active(user_id)
+        if resource is None:
+            return FlowResult((NOTHING_PENDING,))
+        if resource.state != "AWAITING_PLACEMENT":
+            return FlowResult((PLACEMENT_HINT,))
+        manual_placement.mark(resource.id)
+        await self._log("manual_placement", user_id, resource.id)
+        folders = sorted(self.deps.settings.categories)
+        return FlowResult(
+            (MANUAL_PLACEMENT_NOTE, folder_picker.folders_list_html(folders, 0)),
+            keyboard=FoldersKB(page=0),
             parse_mode=PARSE_HTML,
         )
 
@@ -997,6 +1049,7 @@ class ResourceFlow:
         except ValueError:
             await self._log("placement_rejected", user_id, resource.id, detail=f"folder={folder!r}")
             return FlowResult((UNKNOWN_FOLDER,))
+        manual_placement.clear(resource.id)  # S6: placement settled, mark no longer needed
 
         needs_admin = await self._latest_needs_admin(resource.id)
         iv: dict[str, Any] = {}
@@ -1373,6 +1426,7 @@ class ResourceFlow:
             return FlowResult((NOTHING_PENDING,))
         pending_edits.clear_marker(resource.id)  # S6.2: ❌ / /cancel end the edit loop
         rearm.disarm(user_id)  # flow-interrupt-rearm: cancel ends the armed ask too
+        manual_placement.clear(resource.id)  # unreliable-decision-retry S6: cancel frees the mark
         await set_resource_state(self.deps.conn, resource.id, "CANCELLED")
         _transition(resource.id, resource.state, "CANCELLED")
         await self._log("cancelled", user_id, resource.id, detail=f"was={resource.state}")

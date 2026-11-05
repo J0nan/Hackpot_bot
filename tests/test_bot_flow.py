@@ -20,7 +20,7 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
-from app.bot import handlers, pending_edits, rearm
+from app.bot import handlers, manual_placement, pending_edits, rearm
 from app.bot.flow import (
     ASK_PLATFORMS,
     ASK_SUMMARY,
@@ -197,9 +197,11 @@ def _no_stale_edit_markers() -> AsyncIterator[None]:
     """Markers are process-global and tmp DBs reuse resource ids across tests."""
     pending_edits.clear_all()
     rearm.clear_all()
+    manual_placement.clear_all()
     yield
     pending_edits.clear_all()
     rearm.clear_all()
+    manual_placement.clear_all()
 
 
 async def _audit(h: dict, action: str) -> list[dict[str, Any]]:
@@ -552,6 +554,37 @@ async def test_continue_re_offers_unreliable_step_and_arms_retry(h: dict) -> Non
 
     await flow.handle_text(USER, "jonan", "context after guard")  # now consumed as retry
     assert "context after guard" in h["decision"].calls[-1]["content"]
+
+
+async def test_manual_classify_ends_the_context_invite(h: dict) -> None:
+    h["decision"].result = _empty_decision()
+    flow = h["flow"]
+    await _capture_token(h)
+    result = await flow.handle_text(USER, "jonan", GITHUB_URL)
+    assert result.keyboard.manual is True  # the ask offers the manual route and cancel
+
+    result = await flow.handle_callback(USER, "jonan", "m")
+    assert isinstance(result.keyboard, FoldersKB)
+    assert result.keyboard.manual is False  # plain picker from here on
+    assert "manual" in "\n".join(result.replies).lower()
+
+    calls = len(h["decision"].calls)
+    result = await flow.handle_text(USER, "jonan", "a few words")  # NOT context any more
+    assert result.replies == (FLOW_INTERRUPTED,)
+    assert isinstance(result.keyboard, ResumeKB)
+    assert len(h["decision"].calls) == calls  # the model was not consulted
+
+    resumed = await flow.handle_callback(USER, "jonan", "keep")  # step stays button-driven
+    assert isinstance(resumed.keyboard, FoldersKB)
+    assert not resumed.keyboard.manual
+    again = await flow.handle_text(USER, "jonan", "still not context")
+    assert again.replies == (FLOW_INTERRUPTED,)
+
+    placed = await flow.handle_callback(USER, "jonan", f"f:{FOLDERS.index(CHOSEN)}")
+    assert placed.replies  # normal placement continues into the interview
+    resource = await get_active_resource_for_user(h["conn"], USER)
+    assert resource.state == "AWAITING_ENTRY_INFO" and resource.folder == CHOSEN
+    assert await _audit(h, "manual_placement")
 
 
 # ---------------------------------------------------------------- placement

@@ -55,7 +55,7 @@ def render_keyboard(deps: AppDeps, result: FlowResult) -> InlineKeyboardMarkup |
     if isinstance(spec, CandidatesKB):
         return keyboards.candidates_kb(list(spec.candidates), folders)
     if isinstance(spec, FoldersKB):
-        return keyboards.folders_kb(folders, page=spec.page)
+        return keyboards.folders_kb(folders, page=spec.page, manual=spec.manual)
     if isinstance(spec, TypeKB):
         return keyboards.type_kb()
     if isinstance(spec, ConfirmKB):
