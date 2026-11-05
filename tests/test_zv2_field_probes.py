@@ -1,11 +1,8 @@
-"""Independent T4 verifier probes (S5/S6): field-scoped edit buttons.
+"""Independent verifier probes for the field-scoped edit buttons.
 
-Spec-derived from odd/tasks/entry-bullet-edit-confirm.md (S6.1-S6.6, S4.5,
-S4.6, L7-R1 analogue). Written independently of the shipped writer tests:
-own harness, own ids, own crafted canonical rows. Flow-level like
-tests/test_bot_flow.py plus duck-typed handler probes. No network, no
-live Telegram.
-"""
+Written independently of the shipped flow tests: own harness, own ids, own
+crafted canonical rows. Flow-level like tests/test_bot_flow.py plus duck-typed
+handler probes. No network, no live Telegram."""
 from __future__ import annotations
 
 import hashlib
@@ -18,7 +15,6 @@ from cryptography.fernet import Fernet
 
 from app.bot import handlers, pending_edits, rearm
 from app.bot.flow import (
-    ASK_DESCRIPTION,
     EDIT_UNAVAILABLE,
     FLOW_INTERRUPTED,
     PREVIEW,
@@ -660,12 +656,10 @@ async def test_v10_no_edit_path_persists_a_bracket_bearing_description(h):
 
 
 async def test_v10_repo_meta_bracket_advisory(h):
-    """ADVISORY reproduction (pre-existing at baseline 723881c, unchanged by
-    T4): a GitHub repo description carrying markdown-link syntax pre-fills
-    the bullet description without the bracket guard (flow.py:633/732-734,
-    both untouched hunks). T4 hardened only the paste path (S6.3).
-    Admin-only, previewed before the irreversible commit - same framing as
-    the baseline L7-R1 finding."""
+    """Advisory reproduction: a GitHub repo description carrying markdown-link
+    syntax pre-fills the bullet description without the bracket guard
+    (flow.py:633/732-734, both unchanged). The guard hardens only the
+    paste path. Admin-only and previewed before the irreversible commit."""
     flow = h["flow"]
     await flow.handle_start(USER, "verifier")
     await flow.handle_text(USER, "verifier", VALID_PAT)

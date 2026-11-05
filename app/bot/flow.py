@@ -1,64 +1,43 @@
-"""Bot orchestration flow (T6; Specs S1-S9, S14) — deliberately aiogram-free.
+"""Bot orchestration flow — deliberately aiogram-free.
 
-Everything the Telegram layer does goes through :class:`ResourceFlow`: the
-handlers in app/bot/handlers.py only translate Telegram objects into calls
-here and render the returned :class:`FlowResult` actions (reply texts,
-keyboard specs, message deletion). The FSM lives in the ``resources.state``
-column (S10), so every method is resume-safe: a fresh process reads the
-user's active resource and continues where it left off.
+All Telegram-facing work goes through :class:`ResourceFlow`: the handlers in
+app/bot/handlers.py translate Telegram objects into calls here and render the
+returned :class:`FlowResult` actions. The FSM lives in the
+``resources.state`` column, so every method is resume-safe.
 
-Design contracts (ODD L8 seam contract + L7 follow-ups honored here):
-  * L7-1: entry name/description pass ``sanitize_line`` AND are refused when
-    they contain ``[``, ``]`` or a backtick (bullet-injection guard).
-  * L7-2: the README stored for classification is cut to the first
-    ``README_EXCERPT_CHARS`` (6000) before reaching ``classify()``.
-  * L7-3: real GitHub clients are built only via :func:`make_github_factory`,
-    which always pins ``settings.target_repo`` — never the module default.
-  * L7-4: :meth:`ResourceFlow.handle_decision` announces itself through the
-    optional progress sink before the (worst-case ~93 s) classify retries run,
-    so a slow decision never looks like a frozen bot. Best-effort only.
-  * L7-5: FetchError/DecisionError land in audit rows with their status /
-    request-id-bearing message; the user only ever sees the safe wording.
-  * Callback payloads carry indices into ``sorted(settings.categories)``
-    only (64-byte limit, no raw paths); the flow resolves them back.
-  * T4 (entry-bullet-edit-confirm, S5/S6): the confirmation card carries an
-    extra row, ``✏️ Description`` ("d") / ``🏷️ Tags`` ("t"), honored only while
-    CONFIRMING. A press answers as a NEW message (``FlowResult.new_message``
-    + ``parse_mode``) with the CURRENT field extracted via
-    ``parse_entry_line`` in a pre-escaped HTML ``<pre>`` block, and records a
-    process-local pending-edit marker (app/bot/pending_edits.py) holding the
-    card ids captured from the user's own callback. The next CONFIRMING text
-    is the paste-back: it is rebuilt through ``build_entry_line`` (name/url
-    stay the reviewed ones), persisted, re-previewed exactly like
-    ``_build_preview``, and the previous card is deleted via
-    ``FlowResult.delete_outgoing``. Without a marker, CONFIRMING text is only
-    ever answered with ``CONFIRMING_HINT`` (the whole-bullet paste UX is
-    removed; the L7-1 bracket/backtick guard is reused for descriptions).
-
-Hardening (T7; ODD L11 a/b/c), all pinned in tests/test_bot_flow.py:
-  * L11-a: those indices are parsed strictly (``^\\d+$``, ASCII digits) — a
-    padded, signed, zero-prefixed, underscored or non-ASCII-digit payload is
-    rejected exactly like ``c:abc``.
-  * L11-b: ``handle_confirm`` catches the traversal gate's ValueError from a
-    tampered ``resources.folder``: it stays CONFIRMING, makes no HTTP call, and
-    records a ``commit_rejected`` audit row with the sanitized folder.
-  * L11-c: the "thinking…" reply above, delivered as one extra reply.
+Behavioral contracts:
+  * entry name/description pass ``sanitize_line`` and are refused when they
+    contain ``[``, ``]`` or a backtick (bullet-injection guard).
+  * the README stored for classification is cut to ``README_EXCERPT_CHARS``
+    before reaching ``classify``.
+  * GitHub clients are built only via :func:`make_github_factory`, which pins
+    ``settings.target_repo``.
+  * :meth:`ResourceFlow.handle_decision` announces itself through the optional
+    progress sink before the classify retries run.
+  * FetchError/DecisionError land in audit rows; the user only sees safe text.
+  * callback payloads carry indices into ``sorted(settings.categories)`` only.
+  * the confirmation card carries the ``✏️ Description`` ("d") /
+    ``🏷️ Tags`` ("t") row while CONFIRMING. A press answers as a new message
+    with the current field in a pre-escaped ``<pre>`` block and records a
+    process-local pending-edit marker. The next CONFIRMING text is the
+    paste-back: rebuilt through ``build_entry_line``, persisted, re-previewed,
+    and the previous card is deleted. Without a marker, CONFIRMING text only
+    gets ``CONFIRMING_HINT``.
+  * callback indices are parsed strictly as ASCII digits.
+  * ``handle_confirm`` catches the traversal gate's ValueError from a tampered
+    ``resources.folder``: it stays CONFIRMING, makes no HTTP call, and records
+    a ``commit_rejected`` audit row.
 
 Secrets: PATs are validated, Fernet-encrypted and the capture message is
 flagged for deletion; plaintext tokens never appear in replies or audit.
 
-flow-interrupt-rearm (S1, S2, S4/S5 — user-corrected): the step the flow
-waits on decides how a text update is read. Text-driven steps (PAT, summary,
-interview answers, the ✏️/🏷️ paste-back while its marker is set) consume the
-next message directly — the prompt must never interrupt them. A text a
-BUTTON-driven step cannot use (candidate/folder picker, confirmation card
-without a pending edit, NEW) is answered with the Continue/Cancel prompt
-(``FLOW_INTERRUPTED`` + ``ResumeKB``) and never processed. ▶️ Continue
-("keep") re-sends the current step's message (:meth:`ResourceFlow.handle_resume`);
-the unreliable-placement context-retry is button-gated too: its invite is
-armed by ``_no_candidates_step`` and ends on any button press (S5). /start
-during a flow offers the same two buttons.
-"""
+The waiting step decides how a text update is read. Text-driven steps (PAT,
+summary, interview answers, the field paste-back while its marker is set)
+consume the next message directly. A text a button-driven step cannot use is
+answered with the Continue/Cancel prompt (``FLOW_INTERRUPTED`` + ``ResumeKB``)
+and never processed. Continue re-sends the current step's message; the
+unreliable-placement context retry is button-gated too. /start during a flow
+offers the same two buttons."""
 
 from __future__ import annotations
 
@@ -120,6 +99,8 @@ def _medal(rank: int) -> str:
 
 def _links_noun(count: int) -> str:
     return f"{count} {'link' if count == 1 else 'links'}"
+
+
 _NAME_MAX = 120
 _DESC_MAX = 500
 _MAX_CONTEXT_CHARS = 2 * SUMMARY_MAX_CHARS
@@ -138,8 +119,9 @@ logger = get_logger(__name__)
 
 
 def _transition(resource_id: Any, old: str, new: str) -> None:
-    """S5: DEBUG state transition with the ``res=<id>`` correlation token."""
+    """DEBUG state transition with the ``res=<id>`` correlation token."""
     logger.debug("state res=%s %s->%s", resource_id, old, new)
+
 
 SLOW_DOWN = "You are sending too fast — please slow down and try again in a minute."
 ASK_PAT_START = (
@@ -147,7 +129,7 @@ ASK_PAT_START = (
     "as one bare message.\n"
     "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
     "Set the following:\n"
-    "    - Expiration to 'No expiration'.\n" 
+    "    - Expiration to 'No expiration'.\n"
     "    - Select 'Only selected repositories' and choose the 'Hackpot' repo on the Repository access.\n"
     "    - Under 'Repository permissions', select 'Add permissions' then add 'Contents' and set it to 'Read and write'.\n\n"
     "Generate the token, copy it, and send it to me as one bare message.\n"
@@ -171,7 +153,7 @@ NEED_TOKEN_FOR_LINK = (
     "Before I can index that link, send me your GitHub Personal Access Token.\n"
     "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
     "Set the following:\n"
-    "    - Expiration to 'No expiration'.\n" 
+    "    - Expiration to 'No expiration'.\n"
     "    - Select 'Only selected repositories' and choose the 'Hackpot' repo on the Repository access.\n"
     "    - Under 'Repository permissions', select 'Add permissions' then add 'Contents' and set it to 'Read and write'.\n\n"
     "Generate the token, copy it, and send it to me as one bare message.\n"
@@ -313,7 +295,7 @@ class FoldersKB:
 
 @dataclass(frozen=True)
 class ManualKB:
-    """Unreliable-decision ask: 🛠️ Manual classify / ❌ Cancel, no folders yet (S6)."""
+    """Unreliable-decision ask: 🛠️ Manual classify / ❌ Cancel, no folders yet."""
 
 
 @dataclass(frozen=True)
@@ -328,7 +310,7 @@ class ConfirmKB:
 
 @dataclass(frozen=True)
 class ResumeKB:
-    """flow-interrupt-rearm S1: ▶️ Continue / ❌ Cancel under the prompt."""
+    """▶️ Continue / ❌ Cancel under the prompt."""
 
     pass
 
@@ -339,14 +321,12 @@ class FlowResult:
 
     ``new_message`` asks a callback answer to go out as fresh message(s) instead
     of editing the button bubble — the ✏️ Description / 🏷️ Tags reply must
-    leave the ✅/❌ confirmation usable (T4, S6.2). ``parse_mode`` (e.g.
+    leave the ✅/❌ confirmation usable. ``parse_mode`` (e.g.
     ``"HTML"``) is handed to every send of this result, so the flow can ship
     pre-escaped code blocks without changing the bot-wide default (none): the
     flow owns the escaping, the handler only renders. ``delete_outgoing``
     names ``(chat_id, message_id)`` pairs the renderer must delete after
-    sending — only ever the card ids captured from the user's OWN button press
-    (T4, S6.3/S6.5), never caller-supplied values.
-    """
+    sending — only ever the card ids captured from the user's OWN button press, never caller-supplied values."""
 
     replies: tuple[str, ...] = ()
     keyboard: CandidatesKB | FoldersKB | ManualKB | TypeKB | ConfirmKB | ResumeKB | None = None
@@ -371,7 +351,7 @@ class AppDeps:
 def make_github_factory(
     settings: Settings, http: httpx.AsyncClient
 ) -> Callable[[str | None], GitHubClient]:
-    """L7-3: pin ``settings.target_repo`` on every GitHubClient we build."""
+    """Pin ``settings.target_repo`` on every GitHubClient we build."""
 
     def factory(token: str | None) -> GitHubClient:
         return GitHubClient(token, http, settings.target_repo)
@@ -399,7 +379,7 @@ def _dump_iv(iv: dict[str, Any]) -> str:
 
 def _load_iv(entry_line: str) -> dict[str, Any]:
     """Partial interview answers ride in the whitelisted ``entry_line`` column
-    as JSON until the final S13 bullet replaces them."""
+    as JSON until the final bullet replaces them."""
     if not entry_line:
         return {}
     try:
@@ -424,16 +404,15 @@ def _html_escape(text: str) -> str:
 
 def _code_block(text: str) -> str:
     """One <pre> block: renders monospace, and copying it yields the value
-    verbatim (S6.2 copy fidelity). Escaped here so no payload can break markup."""
+    verbatim. Escaped here so no payload can break markup."""
     return f"<pre>{_html_escape(text)}</pre>"
 
 
 class ResourceFlow:
-    """One instance per process; all state lives in SQLite (S10)."""
+    """One instance per process; all state lives in SQLite."""
 
     def __init__(self, deps: AppDeps) -> None:
         self.deps = deps
-
 
     async def _touch(self, user_id: int | None, username: str | None) -> None:
         if isinstance(user_id, int) and not isinstance(user_id, bool):
@@ -456,19 +435,17 @@ class ResourceFlow:
         )
 
     async def _emit(self, progress: ProgressSink | None, text: str) -> None:
-        """L7-4/L11-c: best-effort early feedback (a slow call must not look frozen).
+        """Best-effort early feedback (a slow call must not look frozen).
 
         The sink is the caller's rendering concern; a refused send must never
         abort the flow or leak an internal error into chat, so failures here
-        are swallowed after the audit-safe decision call proceeds anyway.
-        """
+        are swallowed after the audit-safe decision call proceeds anyway."""
         if progress is None:
             return
         try:
             await progress(text)
         except Exception:  # noqa: BLE001 - progress is optional UX, not a gate
             pass
-
 
     async def handle_start(self, user_id: int, username: str) -> FlowResult:
         await self._touch(user_id, username)
@@ -485,7 +462,7 @@ class ResourceFlow:
     async def handle_text(
         self, user_id: int, username: str, text: str, progress: ProgressSink | None = None
     ) -> FlowResult:
-        """One text update. ``progress`` is the L7-4 early-feedback sink."""
+        """One text update. ``progress`` is the early-feedback sink."""
         await self._touch(user_id, username)
         text = text or ""
         active = await self._active(user_id)
@@ -526,7 +503,7 @@ class ResourceFlow:
         return FlowResult((CONFIRMING_HINT,))
 
     def _step_takes_text(self, resource: Any) -> bool:
-        """S4 (flow-interrupt-rearm, user-corrected): does the waiting step take text?
+        """Does the waiting step take text?
 
         Text-driven steps — the PAT, the summary, every interview answer, and the
         ✏️/🏷️ paste-back while its marker is set — consume the next message as
@@ -534,9 +511,7 @@ class ResourceFlow:
         them. Button-driven steps (the candidate/folder picker, the confirmation
         card without a pending edit, NEW) never guess: stray text there asks
         first. The unreliable-placement retry belongs to the second group: its
-        invite is armed by ``_no_candidates_step`` and ends on any button press
-        (unreliable-decision-retry + S5), so it flows through the arm gate.
-        """
+        invite is armed by ``_no_candidates_step`` and ends on any button press, so it flows through the arm gate."""
         state = resource.state
         if state in ("NEED_TOKEN", "NEED_SUMMARY"):
             return True
@@ -555,7 +530,7 @@ class ResourceFlow:
         message_id: int | None = None,
     ) -> FlowResult:
         """Button press. ``chat_id``/``message_id`` identify the card the press
-        came from (T4, S6.2); the renderer passes them from the Telegram
+        came from; the renderer passes them from the Telegram
         callback object itself — they are never derived from user text."""
         await self._touch(user_id, username)
         data = (data or "").strip()
@@ -601,14 +576,13 @@ class ResourceFlow:
 
     @staticmethod
     def _parse_index(data: str) -> int | None:
-        """Strict canonical ``^\\d+$`` payload index (L11-a).
+        """Strict canonical ``^\\d+$`` payload index.
 
         ``c: 1``, ``c:+1``, ``c:1_0`` and ``c:١`` fail the ASCII-digit match;
         ``c:01`` matches the shape but is not how an index is ever spelled, so
         the round-trip check rejects it too. Anything that is not exactly what
         :mod:`app.bot.keyboards` produces is treated as hostile, not as a near
-        miss — the resolved value is always an in-range index, never a path.
-        """
+        miss — the resolved value is always an in-range index, never a path."""
         _, separator, raw = data.partition(":")
         if not separator or not _INDEX_RE.match(raw):
             return None
@@ -627,16 +601,14 @@ class ResourceFlow:
             return folders[index]
         return None
 
-
     async def handle_resume(self, user_id: int) -> FlowResult:
-        """▶️ Continue: re-send the current step's message (S2).
+        """▶️ Continue: re-send the current step's message.
 
         Text-driven steps need no arming — their next message is already the
-        answer (S4). Continue matters at button-driven steps: it re-shows the
+        answer. Continue matters at button-driven steps: it re-shows the
         picker or card, and for the unreliable-placement ask it re-arms the
-        context-retry invite through ``_no_candidates_step`` (S5). A stale
-        press (no active resource) is audited.
-        """
+        context-retry invite through ``_no_candidates_step``. A stale
+        press (no active resource) is audited."""
         resource = await self._active(user_id)
         if resource is None:
             await self._log("resume_stale", user_id)
@@ -645,7 +617,7 @@ class ResourceFlow:
         return await self._current_step_message(user_id, resource)
 
     async def _current_step_message(self, user_id: int, resource: Any) -> FlowResult:
-        """The message of the step the flow is waiting on, as first shown (S2)."""
+        """The message of the step the flow is waiting on, as first shown."""
         state = resource.state
         if state == "NEED_TOKEN":
             return FlowResult((PAT_STILL_NEEDED,))
@@ -684,7 +656,6 @@ class ResourceFlow:
             )
         return FlowResult((CONFIRMING_HINT,))
 
-
     async def _capture_pat(
         self, user_id: int, token: str, resume: Any, progress: ProgressSink | None = None
     ) -> FlowResult:
@@ -706,7 +677,6 @@ class ResourceFlow:
             await self._log("summary_requested", user_id, resume.id)
             next_step = FlowResult((ASK_SUMMARY,))
         return FlowResult(next_step.replies, next_step.keyboard, delete_message=True)
-
 
     async def _ingest_link(
         self, user_id: int, raw_url: str, progress: ProgressSink | None
@@ -815,7 +785,6 @@ class ResourceFlow:
         await self._log("summary_stored", user_id, resource.id)
         return await self.handle_decision(user_id, progress)
 
-
     async def handle_decision(
         self, user_id: int, progress: ProgressSink | None = None
     ) -> FlowResult:
@@ -894,16 +863,14 @@ class ResourceFlow:
         )
 
     async def _no_candidates_step(self, user_id: int, resource_id: int) -> FlowResult:
-        """The ask shown when the model produced no candidate (unreliable-decision-retry S1).
+        """The ask shown when the model produced no candidate.
 
         The message and the choice keyboard only — no folders yet: 🛠️ Manual
-        classify opens the full picker (S6), ❌ Cancel drops the resource. The
+        classify opens the full picker, ❌ Cancel drops the resource. The
         user is armed so exactly the next text update re-runs the classification
-        with extra context, any button press ends the invite
-        (flow-interrupt-rearm S5), and ▶️ Continue re-offers this step armed
+        with extra context, any button press ends the invite, and ▶️ Continue re-offers this step armed
         again — unless manual placement was already chosen, which stays
-        button-driven on the plain picker.
-        """
+        button-driven on the plain picker."""
         if not manual_placement.is_marked(resource_id):
             rearm.arm(user_id)
         return FlowResult((DECISION_UNRELIABLE_USER,), keyboard=ManualKB())
@@ -921,13 +888,12 @@ class ResourceFlow:
     async def _retry_with_context(
         self, user_id: int, resource: Any, text: str, progress: ProgressSink | None = None
     ) -> FlowResult:
-        """unreliable-decision-retry S2: the armed text is extra context, not a command.
+        """The armed text is extra context, not a command.
 
         The line is appended to the stored context (capped, newest kept) and
         the classification re-runs through :meth:`handle_decision`; if it is
         still unreliable the same step is re-offered, armed again for another
-        try. Empty text re-asks without spending a model call.
-        """
+        try. Empty text re-asks without spending a model call."""
         extra = sanitize_line(text, SUMMARY_MAX_CHARS)
         if not extra:
             return await self._no_candidates_step(user_id, resource.id)
@@ -942,7 +908,6 @@ class ResourceFlow:
         )
         return await self.handle_decision(user_id, progress)
 
-
     async def handle_more_folders(self, user_id: int, page: int = 0) -> FlowResult:
         """Numbered picker: full readable paths in an HTML caption, numbers as buttons."""
         page = max(0, int(page))
@@ -954,15 +919,14 @@ class ResourceFlow:
         )
 
     async def handle_manual_classify(self, user_id: int) -> FlowResult:
-        """unreliable-decision-retry S6: the user takes folder placement over.
+        """The user takes folder placement over.
 
         Marks the resource (process-local, app/bot/manual_placement.py) so the
         text-context invite is ended: later text is a stray message the
         flow-interrupt gate guards, never classification context. The full
         numbered picker opens here for the first time, and the press itself
         already disarmed any armed ask (handle_callback disarms every press).
-        Valid only while placement is pending.
-        """
+        Valid only while placement is pending."""
         resource = await self._active(user_id)
         if resource is None:
             return FlowResult((NOTHING_PENDING,))
@@ -1018,14 +982,13 @@ class ResourceFlow:
         return FlowResult((*replies, *next_step.replies), next_step.keyboard)
 
     async def _latest_needs_admin(self, resource_id: int) -> float | None:
-        """needs_admin of the newest decision row, for the S7 note across steps."""
+        """The needs_admin value of the newest decision row, shared across steps."""
         async with self.deps.conn.execute(
             "SELECT needs_admin FROM decisions WHERE resource_id = ? ORDER BY id DESC LIMIT 1",
             (resource_id,),
         ) as cursor:
             row = await cursor.fetchone()
         return None if row is None else row["needs_admin"]
-
 
     @staticmethod
     def _derive_step(resource: Any, iv: dict[str, Any]) -> str:
@@ -1087,7 +1050,7 @@ class ResourceFlow:
     async def _answer_line(
         self, user_id: int, resource: Any, iv: dict[str, Any], field_name: str, raw: str, limit: int
     ) -> FlowResult:
-        """L7-1 bullet-injection guard: sanitize, then reject brackets/backticks."""
+        """Sanitize, then reject brackets/backticks."""
         value = sanitize_line(raw, limit)
         if not value or any(ch in value for ch in ("[", "]", "`")):
             await self._log("entry_rejected", user_id, resource.id, detail=f"field={field_name}")
@@ -1136,19 +1099,17 @@ class ResourceFlow:
         await self._log("entry_preview", user_id, resource.id, detail=f"folder={resource.folder}")
         return FlowResult((f"{PREVIEW}\n{line}",), keyboard=ConfirmKB(resource.folder))
 
-
     def _entry_parts(
         self, resource: Any
     ) -> tuple[Any, str, list[str]] | None:
         """Rebuild pieces of the stored bullet: parsed fields + type/tags.
 
-        ``parse_entry_line`` stays as internal plumbing (L9): it reads the
+        ``parse_entry_line`` stays as internal plumbing: it reads the
         current description and tags back out of the canonical ``entry_line``.
         LEGACY cost words inside the tag run are dropped here, so any rebuild
-        emits a cost-free bullet (S4). Returns None when the stored line
+        emits a cost-free bullet. Returns None when the stored line
         cannot support an edit loop (a hand-corrupted row, never a
-        builder-produced one).
-        """
+        builder-produced one)."""
         try:
             parsed = parse_entry_line(resource.entry_line)
         except EntryLineError:
@@ -1176,7 +1137,7 @@ class ResourceFlow:
         chat_id: int | None,
         message_id: int | None,
     ) -> FlowResult:
-        """S6.2: answer a "d"/"t" press as NEW messages and arm the paste-back."""
+        """Answer a "d"/"t" press as NEW messages and arm the paste-back."""
         parts = self._entry_parts(resource)
         if parts is None:
             await self._log(
@@ -1193,7 +1154,7 @@ class ResourceFlow:
     def _rebuild_from_description(
         self, resource: Any, parsed: Any, type_tag: str, platform_tags: list[str], text: str
     ) -> tuple[str | None, str | None]:
-        """S6.3: the pasted line is a DESCRIPTION only (interview guard reused)."""
+        """The pasted line is a DESCRIPTION only (interview guard reused)."""
         stripped = (text or "").strip()
         if "\n" in stripped or "\r" in stripped:
             return None, EDIT_DESC_ONE_LINE
@@ -1215,7 +1176,7 @@ class ResourceFlow:
     def _rebuild_from_tags(
         self, resource: Any, parsed: Any, text: str
     ) -> tuple[str | None, str | None]:
-        """S6.4: whitespace tokens; backticks optional; existing tag rules via build."""
+        """Whitespace tokens; backticks optional; existing tag rules via build."""
         tokens = (text or "").replace("`", " ").split()
         if not tokens:
             return None, EDIT_NO_TYPE_TAG
@@ -1236,18 +1197,16 @@ class ResourceFlow:
         return new_line, None
 
     async def _handle_confirming_text(self, user_id: int, resource: Any, text: str) -> FlowResult:
-        """T4 (S6.3-S6.6): the pending-edit paste pipeline.
+        """The pending-edit paste pipeline.
 
         CONFIRMING text edits anything only while a "d"/"t" marker is set —
-        without one it falls back to ``CONFIRMING_HINT`` (the whole-bullet
-        paste interception is removed, L9). The paste rebuilds the bullet
+        without one it falls back to ``CONFIRMING_HINT``. The paste rebuilds the bullet
         through ``build_entry_line`` (caps stay single-sourced), keeping every
         field the pressed button does not edit, persists it, re-sends exactly
         the confirmation ``_build_preview`` produces and hands the previous
         card's tracked ids to the renderer for best-effort deletion. One
         rejection answers one user-safe error plus the re-offered prompt;
-        state, bullet and the ✅/❌ bubble stay untouched.
-        """
+        state, bullet and the ✅/❌ bubble stay untouched."""
         marker = pending_edits.get_marker(resource.id)
         if marker is None:
             return FlowResult((CONFIRMING_HINT,))
@@ -1289,7 +1248,6 @@ class ResourceFlow:
             keyboard=ConfirmKB(resource.folder),
             delete_outgoing=deletes,
         )
-
 
     async def handle_confirm(self, user_id: int) -> FlowResult:
         resource = await self._active(user_id)
@@ -1421,7 +1379,7 @@ class ResourceFlow:
         return "\n".join(lines)
 
     async def handle_unauthorized(self, user_id: int | None, username: str | None) -> FlowResult:
-        """S9: silent to the chat. The only user-facing effect is none; an audit
+        """Silent to the chat. The only user-facing effect is none; an audit
         row is written and an operator-facing WARNING records the ignored update
         (id + username only, no content)."""
         logger.warning("unauthorized_ignored res=unknown id=%s user=%s", user_id, username or "")

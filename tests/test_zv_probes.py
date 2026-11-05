@@ -1,12 +1,9 @@
-﻿"""Independent verifier probes (read-only verification session).
+"""Independent verifier probes (read-only verification session).
 
-Spec-derived from odd/tasks/entry-bullet-edit-confirm.md. T4 repoint: probes
-that pinned the removed whole-bullet paste UX (S1-S4.4) now drive the two
-field-edit buttons (S5, S6.1-S6.7); probes for surviving plumbing
-(parse/build round-trip) are unchanged. Driven at the flow level like
-tests/test_bot_flow.py (no aiogram objects, no network). These are regression
-probes for the parent to hand to the writer.
-"""
+Probes that pinned the removed whole-bullet paste UX now drive the two
+field-edit buttons; probes for surviving plumbing (parse/build round-trip) are
+unchanged. Driven at the flow level like tests/test_bot_flow.py (no aiogram
+objects, no network). These are regression probes."""
 from __future__ import annotations
 
 import hashlib
@@ -25,7 +22,6 @@ from test_bot_flow import (
     CHOSEN,
     GITHUB_URL,
     USER,
-    VALID_PAT,
     _active_id,
     _audit,
     _to_confirming,
@@ -51,7 +47,7 @@ def _no_stale_markers():
 
 
 async def _press(flow, data: str, message_id: int = CARD):
-    """Press a confirmation-card edit button (S6.2) on the tracked card."""
+    """Press a confirmation-card edit button on the tracked card."""
     return await flow.handle_callback(USER, "jonan", data, chat_id=CHAT, message_id=message_id)
 
 
@@ -72,7 +68,7 @@ async def _row_digest(h: dict, rid: int) -> str:
 
 
 def test_s1_confirm_keyboard_has_field_edit_row() -> None:
-    """S6.1 (T4 repoint): third row = ✏️ Description + 🏷️ Tags; the "e" row is gone."""
+    """Third row = ✏️ Description + 🏷️ Tags; the "e" row is gone."""
     rows = [[(b.text, b.callback_data) for b in r] for r in confirm_kb(CHOSEN).inline_keyboard]
     assert rows[0] == [(f"✅ Commit to {CHOSEN}", "✅")]
     assert rows[1] == [("❌ Cancel", "❌")]
@@ -86,7 +82,7 @@ def test_s1_confirm_keyboard_has_field_edit_row() -> None:
 
 
 async def test_s1_description_keypress_returns_current_description_in_code_block(h: dict) -> None:
-    """T4 repoint: "d" answers with the CURRENT description extracted from the bullet."""
+    """The "d" press answers with the CURRENT description extracted from the bullet."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     stored = await _entry_line(h, rid)
@@ -108,7 +104,7 @@ async def test_s1_description_keypress_returns_current_description_in_code_block
 
 
 async def test_s1_edit_replay_can_be_repeated_and_stays_identical(h: dict) -> None:
-    """S6.6: presses repeat freely and persist nothing; prompts track the current value."""
+    """Presses repeat freely and persist nothing; prompts track the current value."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     before = await _row_digest(h, rid)
@@ -210,7 +206,7 @@ async def test_s1_unauthorized_edit_keypress_is_silent(h: dict) -> None:
 
 
 async def test_s2_description_paste_rebuilds_canonical_and_persists(h: dict) -> None:
-    """T4 repoint: description paste → build_entry_line canonical rebuild."""
+    """Description paste → build_entry_line canonical rebuild."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     parsed = parse_entry_line(await _entry_line(h, rid))
@@ -235,7 +231,7 @@ async def test_s2_description_paste_rebuilds_canonical_and_persists(h: dict) -> 
 
 
 async def test_s2_tags_paste_rebuilds_canonical_and_persists(h: dict) -> None:
-    """S6.4: tags paste keeps name/url/description and re-applies canonical tags."""
+    """Tags paste keeps name/url/description and re-applies canonical tags."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     parsed = parse_entry_line(await _entry_line(h, rid))
@@ -259,11 +255,10 @@ async def test_s2_parse_rebuild_roundtrip_matches_builder(h: dict) -> None:
 
 
 async def test_s3_paste_can_never_reach_the_link_slot(h: dict) -> None:
-    """T4 repoint: the URL lock is now structural.
+    """The URL lock is now structural.
 
     Markdown-link syntax cannot enter the description (bracket guard) and a
-    colon-bearing tag is refused, so the reviewed link stays the only link.
-    """
+    colon-bearing tag is refused, so the reviewed link stays the only link."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     before = await _row_digest(h, rid)
@@ -289,7 +284,7 @@ async def test_s3_paste_can_never_reach_the_link_slot(h: dict) -> None:
 
 
 async def test_s3_editing_never_touches_the_stored_link_spelling(h: dict) -> None:
-    """S6.3/S6.4: every successful rebuild carries the reviewed URL verbatim."""
+    """Every successful rebuild carries the reviewed URL verbatim."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     await _press(flow, "d")
@@ -304,7 +299,7 @@ async def test_s3_editing_never_touches_the_stored_link_spelling(h: dict) -> Non
 
 
 async def test_s44_rejected_edits_each_specific_error_retry_and_no_change(h: dict) -> None:
-    """T4 repoint: marker-driven rejection tables, row byte-identical, marker kept."""
+    """Marker-driven rejection tables, row byte-identical, marker kept."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     stored = await _entry_line(h, rid)
@@ -362,7 +357,7 @@ async def test_s44_retry_still_works_after_rejections_then_accepts(h: dict) -> N
 
 
 async def test_s45_confirm_after_edit_commits_the_edited_bullet_verbatim(h: dict) -> None:
-    """S4.5 (T4 repoint): field edits then ✅ commits the stored line verbatim."""
+    """Field edits then ✅ commits the stored line verbatim."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     parsed = parse_entry_line(await _entry_line(h, rid))
@@ -409,7 +404,7 @@ async def test_s46_folder_validation_still_fires_after_edit(h: dict) -> None:
 
 
 async def test_safety_markup_paste_is_refused_and_nothing_persists(h: dict) -> None:
-    """T4: the bracket guard now rejects markup-carrying descriptions outright —
+    """The bracket guard now rejects markup-carrying descriptions outright —
     no canonical persistence needed because nothing unsafe is ever stored."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)

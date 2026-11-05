@@ -1,9 +1,8 @@
-"""Authorization gate for the bot (Spec S2, S9, S17).
+"""Authorization gate for the bot.
 
 Access is decided exclusively by the numeric Telegram user ID configured in
 ``AUTHORIZED_USERS`` (docker compose). Usernames are never an authorization
-input — they are only stored for audit by the persistence layer.
-"""
+input — they are only stored for audit by the persistence layer."""
 
 from __future__ import annotations
 

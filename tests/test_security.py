@@ -1,10 +1,9 @@
-"""Tests for the T3 security core (Spec S2, S8, S9, S12, S17).
+"""Tests for the security core.
 
 Covers: numeric-ID authorization, the Fernet-encrypted GitHub PAT store, input
 sanitizers (URL / single-line text / category path), and the per-user sliding
 window rate limiter. No network, no real secrets: Fernet keys are generated per
-test and every URL host uses the reserved ``.invalid`` TLD.
-"""
+test and every URL host uses the reserved ``.invalid`` TLD."""
 
 from __future__ import annotations
 
@@ -112,7 +111,7 @@ def test_is_authorized_rejects_non_int_values(settings: Settings) -> None:
 
 
 def test_is_authorized_rejects_booleans(settings: Settings) -> None:
-    """bool is an int subclass; True must never impersonate a Telegram ID."""
+    """The bool type is an int subclass; True must never impersonate a Telegram ID."""
     assert is_authorized(make_settings([1]), True) is False
     assert is_authorized(make_settings([1]), False) is False
 
@@ -165,7 +164,7 @@ def test_validate_pat_format_accepts(token: str) -> None:
         pytest.param("ghp_" + "Ａ" * 36, id="fullwidth-letter"),
         pytest.param("ghp_" + "A" * 18 + "\u200b", id="zero-width-space"),
         pytest.param("ghp_" + "A" * 17 + "\x1b", id="escape-control-char"),
-        pytest.param("ghp_" + "*"*40, id="base64-punctuation"),
+        pytest.param("ghp_" + "*" * 40, id="base64-punctuation"),
         pytest.param(None, id="non-string-none"),
         pytest.param(12345, id="non-string-int"),
     ],
@@ -299,7 +298,7 @@ def test_mask_keeps_only_prefix_and_last_four() -> None:
 def test_mask_leaks_at_most_four_trailing_chars() -> None:
     token = "ghp_" + "".join(chr(ord("A") + i % 26) for i in range(36))
     masked = mask(token)
-    body = token[len("ghp_") :]
+    body = token[len("ghp_"):]
     assert masked.split(ELLIPSIS)[-1] == body[-4:]
     assert body[-5] not in masked
     assert body[4:-4] not in masked

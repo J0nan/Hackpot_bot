@@ -1,8 +1,6 @@
-"""Tests for the GitHub service: URL detection, S13 bullets, Contents API client.
+"""Tests for the GitHub service: URL detection, bullets, Contents API client.
 
-All HTTP goes through httpx.MockTransport — no network, no secrets.
-Covers specs S3, S4, S13, S15, S16 and assumption A1.
-"""
+All HTTP goes through httpx.MockTransport — no network, no secrets."""
 
 from __future__ import annotations
 
@@ -197,8 +195,7 @@ def rebuild_entry_line(parsed: ParsedEntry) -> str:
     """Rebuild like the flow will: map the parsed tags back onto build's inputs.
 
     Legacy cost words between the type tag and the platform tags are dropped
-    silently — a rebuilt bullet never carries a cost tag (S4).
-    """
+    silently — a rebuilt bullet never carries a cost tag."""
     tags = list(parsed.tags)
     type_tag = ""
     if tags and tags[0].startswith("type:"):
@@ -582,7 +579,7 @@ async def test_bearer_header_only_with_token() -> None:
 
 
 async def test_default_target_is_hackpot() -> None:
-    """Shared contract: GitHubClient(token, client) must work with the S4 default repo."""
+    """Shared contract: GitHubClient(token, client) must work with the default repo."""
     recorder = Recorder([(200, {"sha": "sha-1", "content": b64(LEAF_README)})])
     http = httpx.AsyncClient(transport=httpx.MockTransport(recorder.handler))
     client = GitHubClient(TOKEN, http)

@@ -1,10 +1,9 @@
-"""Typed data-access functions over an aiosqlite connection (Spec S10, S17).
+"""Typed data-access functions over an aiosqlite connection.
 
 Every query is fully parameterized. The only SQL text built at runtime is
 assembled from hard-coded identifier whitelists — never from caller data —
 so hostile strings can only ever be stored as inert values. Each mutating
-function commits, keeping the file durable across restarts.
-"""
+function commits, keeping the file durable across restarts."""
 
 from __future__ import annotations
 
@@ -42,7 +41,7 @@ _DECISION_JSON_COLUMNS: frozenset[str] = frozenset({"probabilities_json", "raw_j
 async def upsert_user(
     conn: aiosqlite.Connection, tg_user_id: int, username: str
 ) -> None:
-    """Insert a user or refresh username/last_seen; first_seen stays stable (S17)."""
+    """Insert a user or refresh username/last_seen; first_seen stays stable."""
     now = utc_now()
     await conn.execute(
         """
@@ -150,7 +149,7 @@ async def get_resource(conn: aiosqlite.Connection, resource_id: int) -> Resource
 async def get_active_resource_for_user(
     conn: aiosqlite.Connection, tg_user_id: int
 ) -> Resource | None:
-    """Newest resource of *tg_user_id* still in a non-final state (resume, S10)."""
+    """Newest resource of *tg_user_id* still in a non-final state."""
     placeholders = ", ".join("?" for _ in ACTIVE_STATES)
     async with conn.execute(
         f"SELECT * FROM resources "
@@ -239,7 +238,7 @@ async def audit(
     resource_id: int | None = None,
     detail: str = "",
 ) -> int:
-    """Append an audit trail row (user IDs plus usernames kept for audit, S17)."""
+    """Append an audit trail row."""
     cursor = await conn.execute(
         """
         INSERT INTO audit_log (tg_user_id, resource_id, action, detail, created_at)

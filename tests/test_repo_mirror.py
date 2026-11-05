@@ -1,12 +1,11 @@
-"""Repo mirror sync service (repo-mirror-dedup T2; Specs S2, S3, S4, S7).
+"""Repo mirror sync service.
 
-Covers README link extraction (S2), the incremental sync contract: one tree
-call and a head-sha short-circuit when the repo did not move (S3), startup-run
-plus interval loop (S4), and the failure policy: a broken fetch never deletes
-known links, and the state only pins to a head sha after a clean pass so the
-next tick retries exactly the files that failed (S7). All network is injected;
-no live GitHub calls.
-"""
+Covers README link extraction and the incremental sync contract: one tree
+call and a head-sha short-circuit when the repo did not move, the startup and
+interval loop, and the failure policy: a broken fetch never deletes known
+links, and the state only pins to a head sha after a clean pass so the next
+tick retries exactly the files that failed. All network is injected; no live
+GitHub calls."""
 
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 
 import aiosqlite
 import pytest

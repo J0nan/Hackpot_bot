@@ -1,12 +1,11 @@
-"""Leveled logging with secret redaction (feature hackpot-logging; Specs S2-S5).
+"""Leveled logging with secret redaction.
 
 Stdlib ``logging`` only — no new dependencies. Three concerns live here:
 
 * :func:`setup_logging` installs **one** ``StreamHandler`` on the root logger
-  that writes to **stdout** (S3 — Docker captures it, ``docker compose logs -f
-  bot`` is the operator interface). It is idempotent: a second call replaces
+  that writes to **stdout**. It is idempotent: a second call replaces
   its own handler instead of stacking a duplicate.
-* :class:`RedactionFilter` is attached to that handler (S4). It scrubs every
+* :class:`RedactionFilter` is attached to that handler. It scrubs every
   configured secret literal and every credential *shape* out of the rendered
   message AND the formatted exception text, so a log line can never carry a
   plaintext credential — including logs emitted by third-party loggers
@@ -16,8 +15,7 @@ Stdlib ``logging`` only — no new dependencies. Three concerns live here:
 Logger-name convention: every module calls ``get_logger(__name__)``, so logger
 names are the dotted module path (``app.main``, ``app.services.decision``,
 ``app.bot.flow``) and the whole tree is configured by the one root handler.
-There is a single sink (stdout) and a single redaction layer (the filter).
-"""
+There is a single sink (stdout) and a single redaction layer (the filter)."""
 
 from __future__ import annotations
 
@@ -56,13 +54,12 @@ def _scrub(text: str, secrets: tuple[str, ...]) -> str:
 
 
 class RedactionFilter(logging.Filter):
-    """Scrub credentials from the record text and the formatted exception (S4).
+    """Scrub credentials from the record text and the formatted exception.
 
     Attached to the handler, so it also covers records produced by third-party
     loggers that propagate to the root. ``filter`` mutates the record in place
     (rendered message + ``exc_text``) so every downstream handler sees only
-    scrubbed text, then returns ``True`` (it never suppresses a record).
-    """
+    scrubbed text, then returns ``True`` (it never suppresses a record)."""
 
     def __init__(self, secrets: tuple[str, ...] = ()) -> None:
         super().__init__()

@@ -1,14 +1,13 @@
-"""Tests for the Qwen System One decision client (Specs S5, S6, S7).
+"""Tests for the Qwen System One decision client.
 
 All HTTP is mocked with ``httpx.MockTransport`` — no live network. The API key
-is always a fake value, and the tests assert it can never leak into errors.
-"""
+is always a fake value, and the tests assert it can never leak into errors."""
 
 from __future__ import annotations
 
 import dataclasses
 import json
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 import httpx
 import pytest
@@ -91,7 +90,7 @@ def verified_response(
     noul: float | None = 0.02,
     request_id: str | None = "req-42",
 ) -> dict[str, Any]:
-    """Canned response in the VERIFIED shape (ODD log entry L4)."""
+    """Canned response in the VERIFIED shape."""
     folder: dict[str, Any] = {"type": "choice", "confidence": 0.75}
     if choice is not None:
         folder["choice"] = choice
@@ -254,7 +253,7 @@ async def test_classify_posts_verified_contract(make_client) -> None:
 
 
 async def test_classify_authorizes_with_secretstr_key_from_settings(make_client) -> None:
-    """Settings.qwen_api_key is a SecretStr (S6) — same header as the str form."""
+    """Settings.qwen_api_key is a SecretStr — same header as the str form."""
     recorder = Recorder()
     client = make_client(
         scripted_handler([ok(verified_response(PROBABILITIES))], recorder),

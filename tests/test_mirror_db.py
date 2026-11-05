@@ -1,11 +1,10 @@
-"""Mirror index persistence (repo-mirror-dedup T1; Specs S1, S2).
+"""Mirror index persistence.
 
 Schema bootstrap for the three mirror tables, the typed repository functions
 behind the repo mirror (link upsert/find/replace, per-file blob shas, single-row
 sync state), and the multi-folder semantics: one URL listed under two leaf
 READMEs is two rows, and deleting one file must not blind the intake gate to
-the other listing. Real aiosqlite under tmp_path; no network, no live data.
-"""
+the other listing. Real aiosqlite under tmp_path; no network, no live data."""
 
 from __future__ import annotations
 
@@ -129,7 +128,7 @@ async def test_replace_with_empty_links_clears_folder_only(db: aiosqlite.Connect
 
 
 async def test_repository_functions_commit_immediately(db: aiosqlite.Connection) -> None:
-    """No caller-side commit: a second connection sees the write (S4 restart safety)."""
+    """No caller-side commit: a second connection sees the write."""
     await upsert_mirror_link(db, "k", "https://a", "f1")
     async with db.execute("SELECT COUNT(*) AS n FROM mirror_links") as cursor:
         assert (await cursor.fetchone())["n"] == 1
@@ -168,7 +167,7 @@ async def test_mirror_state_single_row_overwritten(db: aiosqlite.Connection) -> 
 async def test_mirror_state_timestamp_matches_utc_now_shape(
     db: aiosqlite.Connection,
 ) -> None:
-    """synced_at uses the package's single timestamp source (ISO-8601 with Z)."""
+    """The synced_at value uses the package's single timestamp source (ISO-8601 with Z)."""
     from datetime import datetime
 
     await set_mirror_state(db, "head-1")

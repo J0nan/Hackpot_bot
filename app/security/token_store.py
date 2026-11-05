@@ -1,9 +1,8 @@
-"""GitHub PAT capture, validation, encryption at rest, and masking (Spec S8, S12).
+"""GitHub PAT capture, validation, encryption at rest, and masking.
 
 A PAT is treated as a secret everywhere: it is validated before storage, stored
 only as a Fernet token, and every failure path returns a generic message that
-never echoes the token. Callers log with :func:`mask`, never the plaintext.
-"""
+never echoes the token. Callers log with :func:`mask`, never the plaintext."""
 
 from __future__ import annotations
 
@@ -66,10 +65,9 @@ def validate_pat_format(token: str) -> bool:
 def looks_like_token(text: str) -> bool:
     """True when a Telegram message body is a single-line bare PAT.
 
-    Used by the capture flow (S8): only a whole message that is exactly one
+    Used by the capture flow: only a whole message that is exactly one
     token is treated as a token, so prose containing a token is not stored and
-    multi-line pastes are not silently truncated.
-    """
+    multi-line pastes are not silently truncated."""
     if not isinstance(text, str) or not text:
         return False
     if any(character in text for character in ("\r", "\n", "\v", "\f", "\x85", "\u2028", "\u2029")):

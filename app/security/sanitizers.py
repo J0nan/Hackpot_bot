@@ -1,4 +1,4 @@
-"""Input sanitizers used on every untrusted bot input (Spec S12, S13, S15).
+"""Input sanitizers used on every untrusted bot input.
 
 Three gates:
   * :func:`sanitize_url` — resource links (https-only, no credentials, bounded).
@@ -8,8 +8,7 @@ Three gates:
     leaf category, never a user-built path (path traversal gate).
 
 Error messages are short and static: they must not echo attacker-controlled
-input into logs or back into chat.
-"""
+input into logs or back into chat."""
 
 from __future__ import annotations
 

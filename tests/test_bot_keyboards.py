@@ -1,15 +1,12 @@
-"""Deterministic tests for the pure keyboard builders (T6; Specs S7, S13, S14).
+"""Deterministic tests for the pure keyboard builders.
 
 Labels and callback_data are pinned byte-for-byte: callback payloads carry
 indices into ``sorted(settings.categories)`` only — never raw folder paths —
-and every payload stays inside Telegram's 64-byte callback_data budget.
-"""
+and every payload stays inside Telegram's 64-byte callback_data budget."""
 
 from __future__ import annotations
 
 import re
-
-import pytest
 
 from app.bot import folder_picker
 from app.bot.keyboards import (
@@ -145,7 +142,7 @@ def test_folders_kb_page_zero_number_buttons_with_next() -> None:
 
 
 def test_manual_kb_offers_manual_classify_and_cancel_only() -> None:
-    """unreliable-decision-retry: the ask is a choice — no folders until manual."""
+    """The ask is a choice — no folders until manual."""
     rows = _cells(manual_kb())
     assert rows == [[("🛠️ Manual classify", "m")], [("❌ Cancel", "❌")]]
     for row in rows:
@@ -304,7 +301,7 @@ def test_type_kb_lists_allowed_types_only_as_direct_callbacks() -> None:
 
 
 def test_cost_keyboard_is_gone() -> None:
-    """S2: the cost keyboard no longer exists anywhere."""
+    """The cost keyboard no longer exists anywhere."""
     import app.bot.keyboards as keyboards_module
 
     assert not hasattr(keyboards_module, "cost_kb")

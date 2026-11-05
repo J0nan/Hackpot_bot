@@ -1,14 +1,13 @@
-"""Leveled logging with secret redaction (feature hackpot-logging; Specs S2-S6).
+"""Leveled logging with secret redaction.
 
-The point of this file is S4: a credential must never reach the log stream.
+The point of this file is: a credential must never reach the log stream.
 That guarantee lives on the *handler filter*, so redaction is proven through
 the real configured handler and captured ``stdout`` (``capsys``) — never
 through ``caplog``, whose own handler bypasses the handler we install.
 
 Wiring seams (decision / github / flow) are exercised against their real
 functions so a log line that exists in the module is pinned, while the
-existing behaviour (return values, raised errors) stays untouched (S6).
-"""
+existing behaviour (return values, raised errors) stays untouched."""
 
 from __future__ import annotations
 

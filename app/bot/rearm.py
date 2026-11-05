@@ -1,4 +1,4 @@
-"""Process-local re-arm markers (flow-interrupt-rearm; Specs S2/S3).
+"""Process-local re-arm markers.
 
 While a resource flow is in progress every text update is guarded: the flow
 (app/bot/flow.py) answers the Continue/Cancel prompt and does NOT process the
@@ -12,8 +12,7 @@ prompt simply returns (silent, safe degradation).
 Keyed by Telegram user id: one active resource per user drives the guard, and
 every arm is consumed by the next text, cleared by a button press or by
 /cancel, so a finished or redirected flow never leaves one behind.
-``clear_all`` exists for test isolation (in-process runs reuse user ids).
-"""
+``clear_all`` exists for test isolation (in-process runs reuse user ids)."""
 
 from __future__ import annotations
 

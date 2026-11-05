@@ -1,9 +1,8 @@
 """Environment-only configuration, validated fail-fast at startup.
 
-All values come from docker compose env vars (Spec S6). This module is the
-shared contract for every other component: import `Settings` and read fields,
-never call os.environ elsewhere.
-"""
+All values come from docker compose env vars. This module is the shared
+contract for every other component: import `Settings` and read fields, never
+call os.environ elsewhere."""
 
 from __future__ import annotations
 
@@ -12,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Any
 
-from cryptography.fernet import Fernet, InvalidToken  # noqa: F401  (key validation)
+from cryptography.fernet import Fernet
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -149,5 +148,5 @@ class Settings(BaseSettings):
         return folder
 
     def readme_path(self, folder: str) -> str:
-        """Path of the leaf README inside the target repo (S13)."""
+        """Path of the leaf README inside the target repo."""
         return f"{self.folder_or_reject(folder)}/README.md"

@@ -70,7 +70,7 @@ def page_windows(
                 windows[-1][1].extend(folders[offset:])
                 break
             take = min(size, len(folders) - offset)
-            windows.append((start + offset, list(folders[offset : offset + take])))
+            windows.append((start + offset, list(folders[offset: offset + take])))
             offset += take
         start += len(folders)
     return windows

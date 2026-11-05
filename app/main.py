@@ -1,12 +1,11 @@
-"""Entrypoint (T6; Specs S10, S11).
+"""Entrypoint.
 
 Wires the seams: fail-fast Settings, the SQLite bootstrap, one shared
 httpx client (30 s timeouts per the Security section), the rate limiter, and
 the aiogram dispatcher with the bot Router. Both polling and this module do
 no network at construction time; on shutdown the shared httpx client and the
-database connection are always closed (L7-6) — the Bot session is closed by
-``start_polling(close_bot_session=True)``.
-"""
+database connection are always closed — the Bot session is closed by
+``start_polling(close_bot_session=True)``."""
 
 from __future__ import annotations
 

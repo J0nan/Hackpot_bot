@@ -114,7 +114,7 @@ class TestMergeCategories:
         existing = {"01_Recon_and_OSINT/OSINT": "Hand-tuned criteria"}
         live = ["01_Recon_and_OSINT/OSINT"]
         merged, added, _ = mod.merge_categories(existing, live,
-                                                 {"01_Recon_and_OSINT/OSINT": "readme text"})
+                                                {"01_Recon_and_OSINT/OSINT": "readme text"})
         assert merged["01_Recon_and_OSINT/OSINT"] == "readme text"
         assert added == []
 

@@ -1,26 +1,23 @@
-"""Qwen System One decision-model client (Specs S5, S6, S7).
+"""Qwen System One decision-model client.
 
 Single outbound seam to the decision API whose request/response shape was
-verified against the live service (ODD log entry L4):
+verified against the live service:
 
     POST {QWEN_API_URL}
     Authorization: Bearer {QWEN_API_KEY}
     Content-Type: application/json
     body: {"model": ..., "state": {"ticket_id", "content"}, "questions": {...}}
 
-Everything the bot shows as a placement candidate comes from
-``answers.folder.probabilities`` (S7); ``answers.needs_admin.noul`` comes from
-the same call. The model used to answer a cost question too — that question is
-retired (remove-cost-tag S3): a stray ``answers.cost`` in a response is simply
-ignored.
+Placement candidates come from ``answers.folder.probabilities``;
+``answers.needs_admin.noul`` comes from the same call. A stray
+``answers.cost`` in a response is ignored.
 
-Security rules for this module (S12):
+Security rules for this module:
   * the API key is held as ``SecretStr`` and is never placed in an exception
     message; any server-returned body excerpt is whitespace-collapsed,
     truncated, and scrubbed of the key before it reaches ``DecisionError``;
   * bounded retries (2 extra attempts) with backoff, 30 s default timeout;
-  * the raw response dict is kept on the result for the SQLite audit row (S10).
-"""
+  * the raw response dict is kept on the result for the SQLite audit row."""
 
 from __future__ import annotations
 
@@ -122,11 +119,9 @@ def build_request(
     categories: Mapping[str, str],
     max_state_chars: int = MAX_STATE_CHARS,
 ) -> dict[str, Any]:
-    """Build the System One request body (verified shape, L4).
+    """Build the System One request body.
 
-    ``categories`` is the leaf-path -> criteria map from ``CATEGORIES_JSON``
-    (S18); its keys are exactly the folders the model may answer with (S7).
-    """
+    ``categories`` is the leaf-path -> criteria map from ``CATEGORIES_JSON``; its keys are exactly the folders the model may answer with."""
     if not model or not model.strip():
         raise ValueError("model must be a non-empty string")
     if not categories:
@@ -172,7 +167,7 @@ def _number(value: Any) -> float | None:
 def _parse_classification(
     data: dict[str, Any], threshold: float, max_candidates: int
 ) -> ClassificationResult:
-    """Turn a verified-shape response into ranked candidates (S7)."""
+    """Turn a verified-shape response into ranked candidates."""
     answers = data.get("answers")
     if not isinstance(answers, Mapping):
         raise DecisionError(f"decision response carries no answers object for the '{FOLDER_QUESTION}' question")
@@ -222,12 +217,11 @@ def _parse_classification(
 
 
 class DecisionClient:
-    """Async client for the System One ``/systemone`` endpoint (S5, S6).
+    """Async client for the System One ``/systemone`` endpoint.
 
     The caller owns the ``httpx.AsyncClient`` (so the bot can share one pool);
     this class owns the endpoint URL, the Bearer credential, and the retry
-    policy.
-    """
+    policy."""
 
     def __init__(
         self,
@@ -256,7 +250,7 @@ class DecisionClient:
         self._sleep: SleepFn = sleep if sleep is not None else asyncio.sleep
 
     def _headers(self) -> dict[str, str]:
-        """Exact auth headers verified against the live API (L4)."""
+        """Exact auth headers verified against the live API."""
         return {
             "Authorization": f"Bearer {self._api_key.get_secret_value()}",
             "Content-Type": "application/json",
@@ -364,12 +358,11 @@ class DecisionClient:
         threshold: float,
         max_candidates: int,
     ) -> ClassificationResult:
-        """Ask the model where ``content`` belongs and rank the options (S5, S7).
+        """Ask the model where ``content`` belongs and rank the options.
 
         ``threshold`` is ``CONFIDENCE_THRESHOLD`` and ``max_candidates`` is
-        ``MAX_CANDIDATES_SHOWN`` from docker compose (S6) — validation of both
-        happens here, before any network call.
-        """
+        ``MAX_CANDIDATES_SHOWN`` from docker compose — validation of both
+        happens here, before any network call."""
         if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
             raise ValueError("threshold must be a number between 0 and 1")
         if not 0.0 <= float(threshold) <= 1.0:

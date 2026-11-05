@@ -1,4 +1,4 @@
-"""SQLite persistence layer (Spec S10): connection bootstrap and schema.
+"""SQLite persistence layer: connection bootstrap and schema.
 
 `open_db` is the single entry point. It creates the database file and any
 missing parent directories, applies the PRAGMAs every other component
@@ -7,8 +7,7 @@ idempotently, and commits — so the bot survives updates and restarts with
 pending flows intact.
 
 The `enc_token` column stores opaque ciphertext blobs produced by
-app/security; this layer never performs cryptography itself.
-"""
+app/security; this layer never performs cryptography itself."""
 
 from __future__ import annotations
 
@@ -92,7 +91,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at  TEXT NOT NULL
 );
 
--- Repo mirror (repo-mirror-dedup S1/S2): every link currently listed in a
+-- Repo mirror: every link currently listed in a
 -- README of the target repo, including links added outside the bot. One row
 -- per (folder, url_key): a hand-duplicated entry stays visible from each
 -- README that lists it, and deleting one file cannot blind the intake gate.

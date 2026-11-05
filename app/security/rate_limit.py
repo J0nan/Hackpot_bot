@@ -1,11 +1,10 @@
-"""Per-user sliding-window rate limiting (Spec S12).
+"""Per-user sliding-window rate limiting.
 
 The Telegram handler graph runs on a single asyncio event loop, and every
 ``allow`` call is synchronous with no awaits inside it, so no other coroutine
 can interleave mid-update. That "thread of one" property is why the plain
 ``dict`` + ``deque`` below need no locks; if this limiter is ever shared across
-threads or the check-and-record split is awaited, add a lock.
-"""
+threads or the check-and-record split is awaited, add a lock."""
 
 from __future__ import annotations
 

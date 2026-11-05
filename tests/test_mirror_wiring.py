@@ -1,11 +1,10 @@
-"""Settings and startup wiring for the mirror loop (repo-mirror-dedup T4; S3, S4).
+"""Settings and startup wiring for the mirror loop.
 
 Bounds on the new optional Settings fields (defaults keep every existing
 construction green), and one integration pin on ``app.main``: with the switch
 on, ``mirror_sync_loop`` is launched as a task on the shared DB connection and
 cancelled on shutdown; with the switch off, it is never launched. aiogram's
-Bot/Dispatcher are stubbed — no network, no real polling.
-"""
+Bot/Dispatcher are stubbed — no network, no real polling."""
 
 from __future__ import annotations
 
@@ -117,7 +116,7 @@ def wired(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
 
 
 async def test_main_launches_mirror_task_and_cancels_on_shutdown(wired: dict) -> None:
-    """S4: the loop runs at startup for the life of the process (cancel at exit)."""
+    """The loop runs at startup for the life of the process (cancel at exit)."""
     await wired["main"].main()
     assert len(wired["mirror_calls"]) == 1
     settings, conn = wired["mirror_calls"][0]

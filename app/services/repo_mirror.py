@@ -1,4 +1,4 @@
-"""Repo mirror sync (repo-mirror-dedup T2; Specs S2, S3, S4, S7).
+"""Repo mirror sync.
 
 The target repo is the source of truth for what is already published: humans
 edit leaf READMEs outside the bot, and its links must block intake anyway.
@@ -7,14 +7,14 @@ This service indexes every URL listed as a markdown bullet inside any
 the ``mirror_links`` tables, incrementally:
 
 * one recursive ``git/trees`` call per run gives the branch-tip tree sha plus
-  every README blob sha (S3: a quiet repo costs exactly one API call);
+  every README blob sha;
 * if the tree sha equals ``mirror_state.head_sha`` the repo did not move and
   the run short-circuits without any fetch;
 * otherwise only READMEs whose blob sha changed are refetched, via the raw
   host (no API rate limit — same pattern as ``category_sync``);
 * READMEs that vanished prune their rows; URLs that stay are refreshed.
 
-Failure policy (S7): a README fetch that fails (non-200/transport error)
+Failure policy: a README fetch that fails (non-200/transport error)
 keeps that folder's previous rows and does NOT store the new blob sha, and
 ``mirror_state`` only pins to a head sha after a fully clean pass — so the
 next tick re-derives exactly the failed files and retries them. A tree-call
@@ -26,12 +26,10 @@ canonicalization shared by intake and commit-time dedup; nothing here may
 invent a second normalization.
 
 :func:`mirror_sync_loop` is the long-lived task: one sync **immediately at
-startup** (S4 — this also recovers a deleted DB or an offline gap, because
-``mirror_state`` is then absent/stale), then one per
-``settings.mirror_sync_interval_hours`` (S3, default hourly). The loop awaits
+startup**, then one per
+``settings.mirror_sync_interval_hours``. The loop awaits
 each pass sequentially, so passes can never overlap, and every error is
-logged and retried at the next tick.
-"""
+logged and retried at the next tick."""
 
 from __future__ import annotations
 
@@ -64,7 +62,7 @@ _FETCH_WORKERS = 8
 
 
 class MirrorSyncError(RuntimeError):
-    """The mirror could not observe the repo state this pass (S7)."""
+    """The mirror could not observe the repo state this pass."""
 
 
 _BULLET_RE = re.compile(r"^\s*[-*+]\s")
@@ -158,7 +156,7 @@ def fetch_tree_with_sha(repo: str, branch: str, token: str | None) -> tuple[str,
 
 
 def fetch_raw_text(url: str, token: str | None) -> str | None:
-    """Fetch one raw file; None on any transport failure or non-200 (S7 retry signal)."""
+    """Fetch one raw file; None on any transport failure or non-200."""
     headers = {"User-Agent": USER_AGENT}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -194,8 +192,7 @@ async def sync_mirror_once(
     """One incremental mirror pass. Raises MirrorSyncError when the tree call fails.
 
     Returns ``{status, head_sha, fetched, removed, failed, links}`` where
-    status is "unchanged" (head sha match, zero fetches — S3) or "synced".
-    """
+    status is "unchanged" or "synced"."""
     token = None
     secret = getattr(settings, "github_token", None)
     if secret is not None:
@@ -258,15 +255,14 @@ async def mirror_sync_loop(
     sleep: Callable[[float], Any] = asyncio.sleep,
     sync: Callable[..., Any] = sync_mirror_once,
 ) -> None:
-    """Mirror sync for the life of the bot process (S4): once at startup, then
+    """Mirror sync for the life of the bot process: once at startup, then
     every ``settings.mirror_sync_interval_hours``.
 
     The startup pass is also the recovery path: a deleted DB (no
     ``mirror_state`` row) or an offline gap (stale head sha) makes that first
     pass re-index what it cannot confirm. Passes run sequentially (no
     overlap), and every failure is logged and retried at the next tick — the
-    loop exits only when cancelled by shutdown.
-    """
+    loop exits only when cancelled by shutdown."""
     interval_hours = float(getattr(settings, "mirror_sync_interval_hours", 1.0))
     interval = interval_hours * 3600.0
     logger.info(

@@ -1,10 +1,9 @@
-"""Tests for the SQLite persistence layer (T2; Specs S10, S16, S17).
+"""Tests for the SQLite persistence layer.
 
 Covers schema bootstrap and pragmas, the typed repository functions, the
 resume query, decision JSON round-trips, audit rows, timestamp shape, and
 injection-hostile strings stored verbatim through parameterized queries only.
-Every database file lives under pytest's tmp_path; no live data is touched.
-"""
+Every database file lives under pytest's tmp_path; no live data is touched."""
 
 from __future__ import annotations
 

@@ -1,10 +1,9 @@
-"""Security/regression probes for the T6 bot layer (commit 552ef21).
+"""Security/regression probes for the bot layer.
 
 Each test mirrors an independent-verification probe: authorization gate on
-both paths (S9/S17), PAT never at rest (S8/S12), injection guard (L7-1),
-folder-index safety (S13/S16), commit target/path discipline (S16/S4),
-and mid-interview resume (S10).
-"""
+both paths, PAT never at rest, injection guard,
+folder-index safety, commit target/path discipline,
+and mid-interview resume."""
 from __future__ import annotations
 
 import base64
@@ -100,7 +99,7 @@ async def _audit(conn):
 
 @pytest.fixture(autouse=True)
 def _no_stale_edit_markers():
-    """T4 markers are process-global; tmp DBs reuse resource ids across tests."""
+    """Markers are process-global; tmp DBs reuse resource ids across tests."""
     pending_edits.clear_all()
     rearm.clear_all()
     yield

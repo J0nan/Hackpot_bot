@@ -1,8 +1,7 @@
 """Daily Hackpot category sync — the shared contract for the CLI and the bot.
 
-Moved verbatim from ``scripts/sync_categories.py`` (the script is now a thin
-CLI over this module, so its stdout and .env rewrite are unchanged) and adds
-the in-process pieces the running bot uses:
+The CLI is a thin wrapper over this module, so its stdout and .env rewrite
+match the original script. The in-process pieces the running bot uses are:
 
 * :func:`apply_refresh` — fetch the live leaf map, validate it with the same
   contract as ``Settings._check_categories`` and hot-swap
@@ -13,16 +12,15 @@ the in-process pieces the running bot uses:
   (default ``00:00``, ``CATEGORY_SYNC_TIME``) and repeats the refresh; a
   failed sync keeps the previous categories and is retried at the next slot.
 
-The repo is the source of truth (same rules as the script): leaf README intro
-> existing criteria > placeholder, removed leaves dropped. When a writable
-``.env`` exists (local runs), the fresh map is persisted there with a rolling
-``.env.bak``; under docker compose the container has no .env, and the
-in-memory swap alone keeps the running bot current.
+The repo is the source of truth: leaf README intro > existing criteria >
+placeholder, removed leaves dropped. When a writable ``.env`` exists (local
+runs), the fresh map is persisted there with a rolling ``.env.bak``; under
+docker compose the container has no .env, and the in-memory swap alone keeps
+the running bot current.
 
 ``seconds_until_next`` uses naive local wall-clock time: around a DST change
 the wake-up may land up to an hour early/late on that single day, corrected
-by the next recomputation.
-"""
+by the next recomputation."""
 
 from __future__ import annotations
 

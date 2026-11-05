@@ -1,12 +1,11 @@
-"""Flow integration of the repo mirror (repo-mirror-dedup T3; Specs S1, S6).
+"""Flow integration of the repo mirror.
 
 The intake gate must refuse a link that exists only in the repo mirror —
 nothing is created, one ``duplicate_mirror`` audit row is kept, the reply
 names the folder — while DB-row matches keep their exact existing replies
 (in-progress wins over mirror because it is checked first), and a successful
-commit refreshes the mirror immediately (S6). Real aiosqlite + real Settings +
-hand-rolled fakes, same harness style as tests/test_bot_flow.py. No network.
-"""
+commit refreshes the mirror immediately. Real aiosqlite + real Settings +
+hand-rolled fakes, same harness style as tests/test_bot_flow.py. No network."""
 
 from __future__ import annotations
 
@@ -22,7 +21,6 @@ from app.bot import pending_edits, rearm
 from app.bot.flow import (
     ALREADY_COMMITTED,
     ALREADY_COMMITTED_OUTSIDE,
-    ALREADY_IN_PROGRESS,
     AppDeps,
     STATS_EMPTY,
     ResourceFlow,
@@ -220,7 +218,7 @@ async def test_committed_db_row_keeps_existing_reply(h: dict) -> None:
 
 
 async def test_stats_unaffected_by_mirror_rows(h: dict) -> None:
-    """S2 acceptance: the mirror never leaks into the curator leaderboards."""
+    """The mirror never leaks into the curator leaderboards."""
     await upsert_mirror_link(h["conn"], "a.test", "https://a.test", "f")
     await upsert_mirror_link(h["conn"], "b.test", "https://b.test", "f")
     await h["flow"].handle_start(USER, "jonan")

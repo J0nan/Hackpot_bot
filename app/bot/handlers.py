@@ -1,14 +1,13 @@
-"""Thin aiogram adapters (T6; Specs S2, S9, S12).
+"""Thin aiogram adapters.
 
 Every handler runs the same safety chain BEFORE any flow work:
-  1. ``is_authorized`` — unauthorized chats are silently audited (S9);
+  1. ``is_authorized`` — unauthorized chats are silently audited;
   2. ``RateLimiter.allow`` — over-budget gets exactly one "slow down" reply;
   3. only then the update is translated into a ResourceFlow call and the
      returned FlowResult is rendered (replies, keyboard, deletion).
 
 No business logic lives here; flow.py owns all of it. ``deps`` and ``flow``
-arrive via Dispatcher workflow kwargs (see app/main.py).
-"""
+arrive via Dispatcher workflow kwargs (see app/main.py)."""
 
 from __future__ import annotations
 
@@ -72,8 +71,7 @@ async def _send(message: Message, deps: AppDeps, result: FlowResult) -> None:
     """Reply each text; the keyboard rides on the final reply.
 
     ``result.parse_mode`` is forwarded verbatim (normally None == bot default);
-    the flow pre-escapes anything it marks as HTML (T4, S6.2).
-    """
+    the flow pre-escapes anything it marks as HTML."""
     last = len(result.replies) - 1
     for index, text in enumerate(result.replies):
         markup = render_keyboard(deps, result) if index == last else None
@@ -154,7 +152,7 @@ async def on_text(message: Message, deps: AppDeps, flow: ResourceFlow) -> None:
         return
 
     async def progress(text: str) -> None:
-        """L7-4: one fast reply before the flow starts the slow decision call."""
+        """One fast reply before the flow starts the slow decision call."""
         await message.answer(text)
 
     result = await flow.handle_text(user_id, username, message.text or "", progress=progress)

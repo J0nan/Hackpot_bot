@@ -1,13 +1,10 @@
-"""Tests for the bot orchestration flow (T6; Specs S1-S9, S14; ODD L7 follow-ups).
+"""Tests for the bot orchestration flow.
 
 Real aiosqlite (tmp_path) + real Settings built from a fake env (never the
 machine env), with hand-rolled GitHub/Decision fakes injected through the
 AppDeps factories. No network, no aiogram objects: flow.py must stay
 framework-free. Every assertion goes through observable effects: returned
-FlowResults, stored rows, and audit entries. (T7 adds the L11-a/b/c + L7-4
-hardening pins here; the one handler-wiring probe uses a duck-typed Message,
-same style as tests/test_bot_gate_regression.py.)
-"""
+FlowResults, stored rows, and audit entries."""
 
 from __future__ import annotations
 
@@ -26,7 +23,6 @@ from app.bot.flow import (
     ASK_SUMMARY,
     AppDeps,
     CANCELLED_MSG,
-    CONFIRMING_HINT,
     CandidatesKB,
     ConfirmKB,
     FLOW_INTERRUPTED,
@@ -220,7 +216,7 @@ async def _capture_token(h: dict) -> None:
 
 
 async def _answer(flow: ResourceFlow, text: str, **kw: Any) -> Any:
-    """S4 (revised): text at a text-driven step is its answer — no Continue needed."""
+    """Text at a text-driven step is its answer — no Continue needed."""
     return await flow.handle_text(USER, "jonan", text, **kw)
 
 
@@ -794,7 +790,7 @@ def _current_bullet(
 
 
 async def test_description_press_replies_current_description_in_code_block(h: dict) -> None:
-    """S6.2/S6.3: "d" answers with the CURRENT description as a copyable block."""
+    """The "d" press answers with the CURRENT description as a copyable block."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
 
@@ -817,7 +813,7 @@ async def test_description_press_replies_current_description_in_code_block(h: di
 
 
 async def test_tags_press_replies_current_tags_and_replaces_the_marker(h: dict) -> None:
-    """S6.2: "t" shows the current tag line; another field press replaces it."""
+    """The "t" press shows the current tag line; another field press replaces it."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
@@ -834,7 +830,7 @@ async def test_tags_press_replies_current_tags_and_replaces_the_marker(h: dict) 
 
 
 async def test_field_presses_outside_confirming_are_unknown_callbacks(h: dict) -> None:
-    """S6.2: "d"/"t" are only CONFIRMING actions; elsewhere the audited unknown tail."""
+    """The "d"/"t" presses are only CONFIRMING actions; elsewhere they hit the audited unknown tail."""
     flow = await _to_placement(h)
     for data in ("d", "t"):
         result = await flow.handle_callback(USER, "jonan", data)
@@ -845,7 +841,7 @@ async def test_field_presses_outside_confirming_are_unknown_callbacks(h: dict) -
 
 
 async def test_removed_bullet_edit_payload_is_unknown_in_confirming(h: dict) -> None:
-    """S6.1/S6.7: the whole-bullet "e" payload is gone → audit + UNKNOWN_CALLBACK."""
+    """The whole-bullet "e" payload is gone → audit + UNKNOWN_CALLBACK."""
     flow, _ = await _to_confirming(h)
     result = await flow.handle_callback(
         USER, "jonan", "e", chat_id=CHAT_ID, message_id=CARD_MSG_ID
@@ -855,7 +851,7 @@ async def test_removed_bullet_edit_payload_is_unknown_in_confirming(h: dict) -> 
 
 
 async def test_confirming_text_without_marker_gets_the_interrupt_prompt(h: dict) -> None:
-    """S6.5 + flow-interrupt-rearm S1: plain CONFIRMING text asks Continue/Cancel."""
+    """Plain CONFIRMING text asks Continue/Cancel."""
     flow, _ = await _to_confirming(h)
     result = await flow.handle_text(USER, "jonan", _current_bullet("Rewritten by hand"))
     assert result.replies == (FLOW_INTERRUPTED,)
@@ -865,7 +861,7 @@ async def test_confirming_text_without_marker_gets_the_interrupt_prompt(h: dict)
 
 
 async def test_description_paste_rebuilds_bullet_keeping_name_url_tags(h: dict) -> None:
-    """S6.3: same name, reviewed url, same tags — only the description changes."""
+    """Same name, reviewed url, same tags — only the description changes."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
@@ -884,7 +880,7 @@ async def test_description_paste_rebuilds_bullet_keeping_name_url_tags(h: dict) 
 
 
 async def test_tags_paste_rebuilds_keeping_name_url_description(h: dict) -> None:
-    """S6.4: same name, url and description — only the tags change."""
+    """Same name, url and description — only the tags change."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     await flow.handle_callback(USER, "jonan", "t", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
@@ -919,7 +915,7 @@ TAGS_REJECTIONS: list[tuple[str, str]] = [
 async def test_description_rejections_answer_one_error_and_persist_nothing(
     h: dict, paste: str, needle: str
 ) -> None:
-    """S6.3/S6.6: one specific error, prompt re-offered, row unchanged, marker kept."""
+    """One specific error, prompt re-offered, row unchanged, marker kept."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
@@ -957,7 +953,7 @@ async def test_tags_rejections_answer_one_error_and_persist_nothing(
 
 
 async def test_tags_paste_duplicate_tags_are_deduped_by_the_existing_rule(h: dict) -> None:
-    """S6.4: duplicates stay a dedupe (existing tag rules), never a crash."""
+    """Duplicates stay a dedupe (existing tag rules), never a crash."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     await flow.handle_callback(USER, "jonan", "t", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
@@ -985,7 +981,7 @@ async def test_paste_routes_per_marker_not_per_content(h: dict) -> None:
 
 
 async def test_description_then_tags_then_confirm_commits_edited_bullet(h: dict) -> None:
-    """S4.5/S6.6: edits loop freely; ✅ commits the last entry_line verbatim."""
+    """Edits loop freely; ✅ commits the last entry_line verbatim."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
@@ -1004,7 +1000,7 @@ async def test_description_then_tags_then_confirm_commits_edited_bullet(h: dict)
 
 
 async def test_marker_cleared_after_cancel(h: dict) -> None:
-    """S6.2: ❌ / /cancel clear the pending-edit marker."""
+    """❌ / /cancel clear the pending-edit marker."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     await flow.handle_callback(USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID)
@@ -1033,7 +1029,7 @@ async def test_description_edit_preserves_unicode_and_em_dash_name(h: dict) -> N
 
 
 def test_github_factory_always_pins_settings_target_repo(tmp_path: Path) -> None:
-    """L7-3: never rely on the GitHubClient module default."""
+    """Never rely on the GitHubClient module default."""
     settings = make_settings(TARGET_REPO="Some/OtherRepo")
     factory = make_github_factory(settings, httpx.AsyncClient())
     client = factory(None)
@@ -1049,7 +1045,7 @@ ANALYZING_TEXT = "🤔 Analyzing… send /cancel anytime"
 
 
 async def test_folder_index_must_be_strict_digits(h: dict) -> None:
-    """L11-a: ``c: 1`` / ``c:+1`` / ``c:01`` are rejected exactly like ``c:abc``."""
+    """``c: 1`` / ``c:+1`` / ``c:01`` are rejected exactly like ``c:abc``."""
     flow = await _to_placement(h)
     index = FOLDERS.index(CHOSEN)
     rejected = [
@@ -1080,7 +1076,7 @@ async def test_folder_index_must_be_strict_digits(h: dict) -> None:
 
 
 async def test_folder_page_index_must_be_strict_digits(h: dict) -> None:
-    """L11-a: ``p:<i>`` navigation is strict too; a bad page falls back to page 0."""
+    """``p:<i>`` navigation is strict too; a bad page falls back to page 0."""
     flow = await _to_placement(h)
     for data in ("p:01", "p:+1", "p: 1", "p:1_0"):
         result = await flow.handle_callback(USER, "jonan", data)
@@ -1096,7 +1092,7 @@ async def test_folder_page_index_must_be_strict_digits(h: dict) -> None:
 
 
 async def test_confirm_with_tampered_folder_rejects_safely(h: dict) -> None:
-    """L11-b: a stored folder outside CATEGORIES_JSON must not raise nor commit."""
+    """A stored folder outside CATEGORIES_JSON must not raise nor commit."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
     tampered = "01_Recon/../../etc\nsecret-marker"
@@ -1123,7 +1119,7 @@ async def test_confirm_with_tampered_folder_rejects_safely(h: dict) -> None:
 
 
 async def test_analyzing_progress_reply_precedes_the_decision_call(h: dict) -> None:
-    """L7-4/L11-c: the slow classify is announced before any retry budget is spent."""
+    """The slow classify is announced before any retry budget is spent."""
     flow = h["flow"]
     await _capture_token(h)
     order: list[str] = []
@@ -1187,7 +1183,7 @@ class FakeChat:
 
 
 class FakeBot:
-    """Records delete_message calls (the S6.3 previous-card deletion pin)."""
+    """Records delete_message calls."""
 
     def __init__(self) -> None:
         self.deleted: list[tuple[int, int]] = []
@@ -1246,7 +1242,7 @@ class FakeCallback:
 
 
 async def test_handler_sends_the_analyzing_reply_first(h: dict) -> None:
-    """The rendering side actually wires the progress sink (L7-4)."""
+    """The rendering side actually wires the progress sink."""
     await _capture_token(h)
     message = FakeMessage(USER, "jonan", GITHUB_URL)
     await handlers.on_text(message, h["deps"], h["flow"])
@@ -1257,7 +1253,7 @@ async def test_handler_sends_the_analyzing_reply_first(h: dict) -> None:
 
 
 async def test_handler_text_without_marker_asks_continue_or_cancel(h: dict) -> None:
-    """S6.5 + flow-interrupt-rearm through the renderer: CONFIRMING text = prompt."""
+    """CONFIRMING text = prompt."""
     flow, _ = await _to_confirming(h)
     message = FakeMessage(USER, "jonan", "A tool for things")
     await handlers.on_text(message, h["deps"], flow)
@@ -1266,7 +1262,7 @@ async def test_handler_text_without_marker_asks_continue_or_cancel(h: dict) -> N
 
 
 async def test_handler_deletes_previous_card_once_after_successful_edit(h: dict) -> None:
-    """S6.3: the new delete_outgoing mechanism deletes ONLY the tracked card, once."""
+    """The new delete_outgoing mechanism deletes ONLY the tracked card, once."""
     flow, _ = await _to_confirming(h)
     cb = FakeCallback(USER, "jonan", "d")
     await handlers.on_callback(cb, h["deps"], flow)
@@ -1280,7 +1276,7 @@ async def test_handler_deletes_previous_card_once_after_successful_edit(h: dict)
 
 
 async def test_handler_deletes_nothing_on_rejected_edit(h: dict) -> None:
-    """S6.6: a rejected paste re-offers the prompt (HTML) and deletes nothing."""
+    """A rejected paste re-offers the prompt (HTML) and deletes nothing."""
     flow, _ = await _to_confirming(h)
     cb = FakeCallback(USER, "jonan", "t")
     await handlers.on_callback(cb, h["deps"], flow)
@@ -1523,7 +1519,7 @@ async def _to_summary(h: dict) -> ResourceFlow:
 
 
 async def test_text_at_a_text_step_is_the_answer_directly(h: dict) -> None:
-    """S4: a text-driven step (summary here) takes the message — NO Continue press."""
+    """A text-driven step (summary here) takes the message — NO Continue press."""
     flow = await _to_summary(h)
     result = await flow.handle_text(USER, "jonan", "An offline wordlist generator.")
     assert "folder(s)" in result.replies[0]
@@ -1531,7 +1527,7 @@ async def test_text_at_a_text_step_is_the_answer_directly(h: dict) -> None:
 
 
 async def test_optional_tags_are_accepted_without_the_prompt(h: dict) -> None:
-    """S4 user-report pin: platform tags typed at their step just land."""
+    """Platform tags typed at their step just land."""
     flow = await _to_interview(h)
     await flow.handle_text(USER, "jonan", "Name")
     await flow.handle_text(USER, "jonan", "Description")
@@ -1542,7 +1538,7 @@ async def test_optional_tags_are_accepted_without_the_prompt(h: dict) -> None:
 
 
 async def test_text_during_button_step_asks_continue_or_cancel(h: dict) -> None:
-    """S1 + S4: a text the current step cannot use gets the prompt, unprocessed."""
+    """A text the current step cannot use gets the prompt, unprocessed."""
     flow = await _to_placement(h)
     result = await flow.handle_text(USER, "jonan", "just text")
     assert result.replies == (FLOW_INTERRUPTED,)
@@ -1553,7 +1549,7 @@ async def test_text_during_button_step_asks_continue_or_cancel(h: dict) -> None:
 
 
 async def test_continue_resends_the_current_step_message(h: dict) -> None:
-    """S2: Continue re-sends the step message; a button step stays button-driven."""
+    """Continue re-sends the step message; a button step stays button-driven."""
     flow = await _to_placement(h)
     await flow.handle_text(USER, "jonan", "noise")
     resumed = await flow.handle_callback(USER, "jonan", "keep")
@@ -1564,7 +1560,7 @@ async def test_continue_resends_the_current_step_message(h: dict) -> None:
 
 
 async def test_continue_at_a_text_step_re_asks_it_and_text_still_lands(h: dict) -> None:
-    """S2 + S4: Continue also re-sends a text ask; answers work with or without it."""
+    """Continue also re-sends a text ask; answers work with or without it."""
     flow = await _to_summary(h)
     resumed = await flow.handle_callback(USER, "jonan", "keep")
     assert resumed.replies == (ASK_SUMMARY,)
@@ -1573,7 +1569,7 @@ async def test_continue_at_a_text_step_re_asks_it_and_text_still_lands(h: dict) 
 
 
 async def test_cancel_from_the_prompt_drops_the_resource(h: dict) -> None:
-    """S1: the ❌ button on the prompt is the cancel choice."""
+    """The ❌ button on the prompt is the cancel choice."""
     flow = await _to_placement(h)
     await flow.handle_text(USER, "jonan", "noise")
     result = await flow.handle_callback(USER, "jonan", "❌")
@@ -1582,7 +1578,7 @@ async def test_cancel_from_the_prompt_drops_the_resource(h: dict) -> None:
 
 
 async def test_start_with_active_flow_offers_the_buttons(h: dict) -> None:
-    """S1 on the /start path: pending flow answers with the prompt + ResumeKB."""
+    """Pending flow answers with the prompt + ResumeKB."""
     flow = await _to_summary(h)
     result = await flow.handle_start(USER, "jonan")
     assert result.replies[-1] == FLOW_INTERRUPTED
@@ -1595,7 +1591,7 @@ async def test_start_with_active_flow_offers_the_buttons(h: dict) -> None:
 
 
 async def test_rejected_answer_just_reasks_without_the_prompt(h: dict) -> None:
-    """S4: a rejection re-asks its own step; the retry lands directly."""
+    """A rejection re-asks its own step; the retry lands directly."""
     flow = await _to_interview(h)
     result = await flow.handle_text(USER, "jonan", "Bad]Name")
     assert "[" in result.replies[0] or "]" in result.replies[0]
@@ -1619,7 +1615,7 @@ async def test_keep_without_active_flow_says_nothing_pending(h: dict) -> None:
 
 
 async def test_resume_kb_renders_continue_and_cancel(h: dict) -> None:
-    """S1: the keyboard rides the prompt — ▶️ keep first, ❌ cancel second."""
+    """The keyboard rides the prompt — ▶️ keep first, ❌ cancel second."""
     markup = handlers.render_keyboard(h["deps"], FlowResult(("x",), ResumeKB()))
     assert markup is not None
     rows = markup.inline_keyboard

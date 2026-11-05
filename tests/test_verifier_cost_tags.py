@@ -1,6 +1,6 @@
-"""Independent verifier probes for remove-cost-tag (S1-S5): emitted lines,
-interview order, unknown cost callbacks, decision request shape, legacy
-rebuild drops, tags grammar, /stats boards."""
+"""Independent verifier probes: emitted lines, interview order, unknown cost
+callbacks, decision request shape, legacy rebuild drops, tags grammar, and
+/stats boards."""
 from __future__ import annotations
 
 import dataclasses

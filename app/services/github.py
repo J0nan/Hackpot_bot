@@ -1,15 +1,11 @@
-"""GitHub service: repo-URL detection, S13 bullet building/insertion, Contents API.
+"""GitHub service: repo-URL detection, bullet building/insertion, Contents API.
 
-Pure helpers (`parse_repo_url`, `build_entry_line`, `parse_entry_line`,
-`insert_entry`, `leaf_template`) do no I/O and are unit-testable on their own. `GitHubClient` is the only network
-surface; it takes an already-configured `httpx.AsyncClient` (timeouts/retries live
-there) and the sender's PAT (S8), and every failure is reported as a short, safe
-`FetchError` that never contains the token (S12, S15).
-
-Specs covered: S3 (GitHub link detection + README fetch), S4 (target repo),
-S13 (leaf README bullet format), S15 (public-only ask-the-user fallback),
-S16 (commit to `main` through the Contents API), A1 (missing leaf README).
-"""
+Pure helpers (``parse_repo_url``, ``build_entry_line``, ``parse_entry_line``,
+``insert_entry``, ``leaf_template``) do no I/O and are unit-testable on their
+own. ``GitHubClient`` is the only network surface; it takes an
+already-configured ``httpx.AsyncClient`` (timeouts and retries live there) and
+the sender's PAT. Every failure is reported as a short, safe ``FetchError``
+that never contains the token."""
 
 from __future__ import annotations
 
@@ -69,8 +65,7 @@ class FetchError(Exception):
     """A GitHub read/write failed; carries a short, secret-free message.
 
     `public_hint=True` means the caller must ask the user for the missing
-    information and remind them that all links must be public (S15).
-    """
+    information and remind them that all links must be public."""
 
     def __init__(self, message: str, public_hint: bool = False) -> None:
         super().__init__(message)
@@ -78,7 +73,7 @@ class FetchError(Exception):
 
 
 class ConflictError(FetchError):
-    """HTTP 409: the branch moved under us; refetch the sha and retry (S16)."""
+    """HTTP 409: the branch moved under us; refetch the sha and retry."""
 
 
 class DuplicateError(FetchError):
@@ -86,21 +81,19 @@ class DuplicateError(FetchError):
 
 
 class EntryLineError(ValueError):
-    """A pasted entry bullet is not a parseable `- [Name](url) …` line (S4.3/S4.4).
+    """A pasted entry bullet is not a parseable `- [Name](url) …` line.
 
     The message names the single problem in short, user-safe terms and never
     echoes the pasted payload. Derives from ValueError so handlers that already
-    catch format errors keep working.
-    """
+    catch format errors keep working."""
 
 
 def parse_repo_url(url: str) -> tuple[str, str] | None:
-    """Return (owner, repo) for an https GitHub repo URL, else None (S3).
+    """Return (owner, repo) for an https GitHub repo URL, else None.
 
     Tolerates `www.`, a trailing slash, a `.git` suffix, deeper paths
     (`/tree/…`, `/blob/…`, `/issues/3`), a query/fragment and host casing.
-    Owner/repo case is preserved exactly as written.
-    """
+    Owner/repo case is preserved exactly as written."""
     if not isinstance(url, str) or not url.strip():
         return None
     try:
@@ -204,7 +197,7 @@ def build_entry_line(
     type_tag: str,
     platform_tags: list[str] | None = None,
 ) -> str:
-    """Build one S13 bullet: `- [Name](url) — Description. `type:tool` `linux``."""
+    """Build one bullet: `- [Name](url) — Description. `type:tool` `linux``."""
     display = _one_line(name, "name", MAX_NAME_LEN)
     summary = _one_line(description, "description", MAX_DESCRIPTION_LEN)
     link = _normalize_url(url)
@@ -232,7 +225,7 @@ class ParsedEntry:
 
 
 def parse_entry_line(line: str) -> ParsedEntry:
-    """Parse a pasted S13 bullet back into its fields (edit-confirm flow, S4.3).
+    """Parse a pasted bullet back into its fields.
 
     Accepts exactly what `build_entry_line` emits, plus the minimal tolerances a
     human editing needs: leading/trailing whitespace anywhere, `-` (hyphen-minus)
@@ -240,8 +233,7 @@ def parse_entry_line(line: str) -> ParsedEntry:
     description, optional tags, and multiple spaces between tokens. The url is
     returned raw as typed; URL locking/comparison is the flow's job via
     `_canonical_url`. Name, url, description and tag limits are the same checks
-    `build_entry_line` uses, so anything that parses here also rebuilds.
-    """
+    `build_entry_line` uses, so anything that parses here also rebuilds."""
     text = (line or "").strip()
     if not _ENTRY_DASH_RE.match(text):
         raise EntryLineError("missing leading dash: the line must start with '- '")
@@ -333,7 +325,7 @@ def insert_entry(readme_text: str, entry_line: str) -> tuple[str, str]:
 
 
 def leaf_template(title: str, description: str) -> str:
-    """A1 skeleton for a missing leaf README, mirroring the repo's existing leaves."""
+    """Skeleton for a missing leaf README, mirroring the repo's existing leaves."""
     return (
         f"# {title}\n\n{description}\n\n{RESOURCES_HEADING}\n\n"
         "<!-- Format: - [Name](https://url) — what it does and why it matters. Tags: "
@@ -351,14 +343,14 @@ def leaf_title_from_path(path: str) -> str:
 
 
 def _append_section(readme_text: str, entry_line: str) -> str:
-    """Add a `## Resources` section (with the bullet) to a file that lacks one (S13)."""
+    """Add a `## Resources` section (with the bullet) to a file that lacks one."""
     newline = "\r\n" if "\r\n" in readme_text else "\n"
     base = readme_text if not readme_text or readme_text.endswith(("\n", "\r")) else readme_text + newline
     return f"{base}{newline}{RESOURCES_HEADING}{newline}{newline}{entry_line}{newline}"
 
 
 def _read_error(status: int) -> FetchError:
-    """Map a failing read to the S15 message (never leak the response body)."""
+    """Map a failing read to a safe, user-facing message (never leak the body)."""
     if status in (401, 403):
         return FetchError(f"{TOKEN_HINT} (HTTP {status})", public_hint=True)
     return FetchError(f"{PUBLIC_HINT} (HTTP {status})", public_hint=True)
@@ -379,12 +371,11 @@ def _write_error(status: int, target_repo: str) -> FetchError:
 
 
 class GitHubClient:
-    """Thin GitHub REST client for the bot flow (S3, S4, S16).
+    """Thin GitHub REST client for the bot flow.
 
     The caller owns the `httpx.AsyncClient` (timeouts and bounded retries are
     configured there, per the Security section); this class owns headers, error
-    mapping and the S13/A1 commit orchestration.
-    """
+    mapping and the commit orchestration."""
 
     BASE = "https://api.github.com"
 
@@ -405,7 +396,6 @@ class GitHubClient:
         }
         if token:
             self._headers["Authorization"] = f"Bearer {token}"
-
 
     async def _request(
         self,
@@ -457,9 +447,8 @@ class GitHubClient:
         except UnicodeDecodeError as exc:
             raise FetchError(f"The {what} is not a text file. {PUBLIC_HINT}", public_hint=True) from exc
 
-
     async def repo_meta(self, owner: str, repo: str) -> dict[str, Any]:
-        """Public metadata used to pre-fill the entry interview (S14)."""
+        """Public metadata used to pre-fill the entry interview."""
         response = await self._request("GET", f"/repos/{owner}/{repo}")
         data = self._payload(response, _read_error(response.status_code))
         if not isinstance(data, dict):
@@ -472,7 +461,7 @@ class GitHubClient:
         }
 
     async def readme(self, owner: str, repo: str) -> str:
-        """Decoded README of the submitted repo; FetchError → ask for a summary (S3, S15)."""
+        """Decoded README of the submitted repo; FetchError → ask for a summary."""
         response = await self._request("GET", f"/repos/{owner}/{repo}/readme")
         data = self._payload(response, _read_error(response.status_code))
         return self._decode(data, "README")
@@ -495,7 +484,6 @@ class GitHubClient:
         text = self._decode(data, path)
         sha = str(data["sha"]) if isinstance(data, dict) and data.get("sha") else ""
         return text, sha
-
 
     async def put_file(
         self,
@@ -556,12 +544,11 @@ class GitHubClient:
         leaf_title: str,
         leaf_description: str,
     ) -> tuple[str, str]:
-        """Flow step 7: GET leaf README → insert alphabetically → PUT (S13, S16, A1).
+        """Flow step 7: GET leaf README → insert alphabetically → PUT.
 
         Returns (commit_url, status) with status "created" (new leaf README) or
         "inserted". Raises DuplicateError when the URL is already listed, and
-        retries once on ConflictError with a freshly fetched sha.
-        """
+        retries once on ConflictError with a freshly fetched sha."""
         title = (leaf_title or "").strip() or leaf_title_from_path(path)
         message = f"docs: add resource entry to {path}"
         existing_text, existing_sha = await self.get_file(path, branch)

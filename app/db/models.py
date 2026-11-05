@@ -13,7 +13,7 @@ from typing import Self
 
 @dataclass(frozen=True)
 class User:
-    """One `users` row: numeric Telegram ID primary, username kept for audit (S17)."""
+    """One `users` row: numeric Telegram ID primary, username kept for audit."""
 
     tg_user_id: int
     username: str
@@ -51,7 +51,7 @@ class GithubToken:
 
 @dataclass(frozen=True)
 class Resource:
-    """One `resources` row: the unit that flows through the bot FSM (S10)."""
+    """One `resources` row: the unit that flows through the bot FSM."""
 
     id: int
     tg_user_id: int
@@ -103,7 +103,7 @@ class UserUploadStats:
 
 @dataclass(frozen=True)
 class Decision:
-    """One `decisions` row: the Qwen placement answer kept for audit (S7/S16)."""
+    """One `decisions` row: the Qwen placement answer kept for audit."""
 
     id: int
     resource_id: int
