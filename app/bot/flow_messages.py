@@ -279,6 +279,12 @@ UNKNOWN_CALLBACK = "That button is no longer available — /start or send the li
 COMMIT_PUBLIC_REMINDER = " Remember: all links must be public."
 
 
+COMMIT_IN_PROGRESS = (
+    "⏳ That commit is already in flight — one moment. This press was ignored: "
+    "nothing new was started and nothing was duplicated."
+)
+
+
 FLOW_INTERRUPTED = (
     "⏸️ The step I am waiting on is driven by buttons, so I did not treat "
     "that message as an answer. Press ▶️ Continue to re-send the current "

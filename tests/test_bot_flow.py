@@ -8,6 +8,7 @@ FlowResults, stored rows, and audit entries."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -18,7 +19,7 @@ import pytest
 from aiogram.exceptions import TelegramAPIError
 from cryptography.fernet import Fernet
 
-from app.bot import handlers, manual_placement, pending_edits, rearm
+from app.bot import commit_guard, handlers, manual_placement, pending_edits, rearm
 from app.bot.flow import (
     ASK_PLATFORMS,
     ASK_SUMMARY,
@@ -46,6 +47,12 @@ from app.bot.flow import (
     TypeKB,
     make_github_factory,
 )
+from app.bot.flow_messages import (
+    COMMIT_IN_PROGRESS,
+    COMMIT_REJECTED,
+    DECRYPT_FAILED,
+    NEED_TOKEN_FOR_LINK,
+)
 from app.bot.handlers import precheck
 from app.config import Settings
 from app.db.database import open_db
@@ -55,12 +62,13 @@ from app.db.repository import (
     get_active_resource_for_user,
     get_github_token,
     get_resource,
+    save_github_token,
     set_resource_state,
     upsert_user,
 )
 from app.security.rate_limit import RateLimiter
 from app.security.sanitizers import sanitize_line
-from app.security.token_store import decrypt_pat
+from app.security.token_store import decrypt_pat, encrypt_pat
 from app.services.decision import ClassificationResult, DecisionError, FolderCandidate
 from app.services.github import DuplicateError, FetchError, build_entry_line
 
@@ -199,10 +207,12 @@ def _no_stale_edit_markers() -> AsyncIterator[None]:
     pending_edits.clear_all()
     rearm.clear_all()
     manual_placement.clear_all()
+    commit_guard.clear_all()
     yield
     pending_edits.clear_all()
     rearm.clear_all()
     manual_placement.clear_all()
+    commit_guard.clear_all()
 
 
 async def _audit(h: dict, action: str) -> list[dict[str, Any]]:
@@ -238,6 +248,25 @@ async def _to_confirming(h: dict) -> tuple[ResourceFlow, Any]:
     await flow.handle_callback(USER, "jonan", "tool")
     result = await flow.handle_text(USER, "jonan", "linux")
     return flow, result
+
+
+def _block_commits(h: dict) -> tuple[asyncio.Event, asyncio.Event]:
+    """Park any commit_entry inside the fake until the test releases it.
+
+    Returns (entered, release): ``entered`` fires when a press reaches the
+    fake client, ``release.set()`` lets it finish. This widens the old race
+    window deterministically — synchronization on events, never sleeps."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    real_commit = h["gh"].commit_entry
+
+    async def slow_commit(*args: Any, **kwargs: Any):
+        entered.set()
+        await release.wait()
+        return await real_commit(*args, **kwargs)
+
+    h["gh"].commit_entry = slow_commit
+    return entered, release
 
 
 async def test_unauthorized_is_silent_and_audited(h: dict) -> None:
@@ -779,6 +808,190 @@ async def test_confirm_without_pat_asks_for_token(h: dict) -> None:
     result = await flow.handle_confirm(USER)
     assert "token" in "\n".join(result.replies).lower()
     assert (await get_active_resource_for_user(h["conn"], USER)).state == "CONFIRMING"
+
+
+async def test_double_press_while_committing_ignores_the_second(h: dict) -> None:
+    """Rapid ✅ presses: the in-flight commit keeps running; extra presses are refused.
+
+    The fake GitHub client blocks inside ``commit_entry`` to widen the network
+    window where the old race lived: press #2 must neither reach GitHub nor
+    touch state — it answers COMMIT_IN_PROGRESS and audits the refusal."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    entered, release = _block_commits(h)
+
+    first = asyncio.create_task(flow.handle_confirm(USER))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    second = await asyncio.wait_for(flow.handle_confirm(USER), timeout=1)
+    assert second.replies == (COMMIT_IN_PROGRESS,)
+
+    release.set()
+    result = await first
+    assert any("✅" in reply for reply in result.replies)
+    # Exactly one commit reached GitHub — the refused press never got there.
+    assert len([c for c in h["gh"].calls if c[0] == "commit_entry"]) == 1
+    resource = await get_resource(h["conn"], rid)
+    assert resource.state == "COMMITTED"
+    assert not commit_guard.is_in_flight(USER)
+    rows = await _audit(h, "commit_in_flight")
+    assert len(rows) == 1 and rows[0]["resource_id"] == rid
+
+
+async def test_press_again_after_failed_commit_is_allowed(h: dict) -> None:
+    """Pin: the guard is released on failure — retrying ✅ still works afterwards."""
+    flow, _ = await _to_confirming(h)
+    h["gh"].commit_error = FetchError("GitHub is unreachable right now.", public_hint=True)
+    first = await flow.handle_confirm(USER)
+    assert "unreachable" in "\n".join(first.replies).lower()
+
+    h["gh"].commit_error = None
+    second = await flow.handle_confirm(USER)
+    assert any("✅" in reply for reply in second.replies)
+    assert not commit_guard.is_in_flight(USER)
+
+
+async def test_duplicate_after_companion_press_landed_reports_success(h: dict) -> None:
+    """Restart-window safety net: a DuplicateError for a resource that IS already
+    COMMITTED is the loser of a race, not a genuine duplicate — answer success."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    commit_url = h["gh"].commit_result[0]
+
+    async def racing_commit(*args: Any, **kwargs: Any):
+        # A companion run lands the commit right before GitHub's dedup answers us.
+        await set_resource_state(h["conn"], rid, "COMMITTED", commit_url=commit_url)
+        raise DuplicateError("That link is already listed in x/README.md — nothing was committed.")
+
+    h["gh"].commit_entry = racing_commit
+    result = await flow.handle_confirm(USER)
+    joined = "\n".join(result.replies)
+    assert "✅" in joined
+    assert commit_url in joined
+    assert "already listed" not in joined
+    assert not commit_guard.is_in_flight(USER)
+
+
+async def test_genuine_duplicate_still_warns(h: dict) -> None:
+    """Pin: DuplicateError while this resource is NOT committed keeps the warning."""
+    flow, _ = await _to_confirming(h)
+    h["gh"].commit_error = DuplicateError(
+        "That link is already listed in x/README.md — nothing was committed."
+    )
+    result = await flow.handle_confirm(USER)
+    assert "already listed" in "\n".join(result.replies)
+    resource = await get_resource(h["conn"], await _active_id(h))
+    assert resource.state == "CONFIRMING"
+    assert await _audit(h, "commit_duplicate")
+    assert not commit_guard.is_in_flight(USER)
+
+
+async def test_genuine_duplicate_boundary_other_state_still_warns(h: dict) -> None:
+    """Only a COMMITTED flip answers success; any other state keeps the warning."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    exc = DuplicateError("That link is already listed in x/README.md — nothing was committed.")
+
+    async def racing_commit(*args: Any, **kwargs: Any):
+        await set_resource_state(h["conn"], rid, "CANCELLED")
+        raise exc
+
+    h["gh"].commit_entry = racing_commit
+    result = await flow.handle_confirm(USER)
+    assert result.replies == (str(exc),)
+    assert len(await _audit(h, "commit_duplicate")) == 1
+    assert not await _audit(h, "commit_duplicate_resolved")
+
+
+async def test_refusal_goes_through_the_real_button_path(h: dict) -> None:
+    """The refused press arrives via handle_callback("✅"), not just handle_confirm."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    entered, release = _block_commits(h)
+
+    first = asyncio.create_task(flow.handle_callback(USER, "jonan", "✅"))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    tokens_before = len(h["github_tokens"])
+    second = await asyncio.wait_for(flow.handle_callback(USER, "jonan", "✅"), timeout=1)
+    assert second.replies == (COMMIT_IN_PROGRESS,)
+    # The refusal builds no GitHub client and touches no state.
+    assert len(h["github_tokens"]) == tokens_before
+    mid = await get_resource(h["conn"], rid)
+    assert mid.state == "CONFIRMING"
+
+    release.set()
+    await first
+
+
+async def test_guard_released_after_missing_pat(h: dict) -> None:
+    """The NEED_TOKEN_FOR_LINK early return frees the button for a retry."""
+    flow, _ = await _to_confirming(h)
+    await delete_github_token(h["conn"], USER)
+    assert (await flow.handle_confirm(USER)).replies == (NEED_TOKEN_FOR_LINK,)
+    assert not commit_guard.is_in_flight(USER)
+    await save_github_token(h["conn"], USER, encrypt_pat(h["settings"], VALID_PAT))
+    assert "✅" in "\n".join((await flow.handle_confirm(USER)).replies)
+
+
+async def test_guard_released_after_decrypt_failure(h: dict) -> None:
+    """The DECRYPT_FAILED early return frees the button for a retry."""
+    flow, _ = await _to_confirming(h)
+    await h["conn"].execute(
+        "UPDATE github_tokens SET enc_token = 'garbage' WHERE tg_user_id = ?", (USER,)
+    )
+    await h["conn"].commit()
+    assert (await flow.handle_confirm(USER)).replies == (DECRYPT_FAILED,)
+    assert not commit_guard.is_in_flight(USER)
+
+
+async def test_guard_released_after_commit_rejected(h: dict) -> None:
+    """The COMMIT_REJECTED early return frees the button (still rejected, not stuck)."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    await h["conn"].execute("UPDATE resources SET folder = '99_Not/A_Leaf' WHERE id = ?", (rid,))
+    await h["conn"].commit()
+    assert (await flow.handle_confirm(USER)).replies == (COMMIT_REJECTED,)
+    assert not commit_guard.is_in_flight(USER)
+    assert (await flow.handle_confirm(USER)).replies == (COMMIT_REJECTED,)
+
+
+async def test_two_users_do_not_block_each_other(h: dict) -> None:
+    """The guard is keyed per user: USER's in-flight commit never blocks USER2."""
+    user2 = 200
+    url2 = "https://github.com/OtherOrg/second-tool"
+    flow, _ = await _to_confirming(h)
+    await upsert_user(h["conn"], user2, "second")
+    await save_github_token(h["conn"], user2, encrypt_pat(h["settings"], VALID_PAT))
+    rid2 = await create_resource(h["conn"], user2, url2, "github")
+    await set_resource_state(
+        h["conn"],
+        rid2,
+        "CONFIRMING",
+        folder=CHOSEN,
+        context="Second user resource",
+        entry_line=f"- [second-tool]({url2}) — Another tool. `type:tool` `linux`",
+    )
+
+    entered, release = _block_commits(h)
+
+    first = asyncio.create_task(flow.handle_confirm(USER))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    # USER is in flight; USER2's press must reach GitHub anyway.
+    entered.clear()
+    second = asyncio.create_task(flow.handle_confirm(user2))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    assert commit_guard.is_in_flight(USER) and commit_guard.is_in_flight(user2)
+    # USER's own extra press is still refused.
+    extra = await asyncio.wait_for(flow.handle_confirm(USER), timeout=1)
+    assert extra.replies == (COMMIT_IN_PROGRESS,)
+
+    release.set()
+    r1, r2 = await asyncio.gather(first, second)
+    assert any("✅" in reply for reply in r1.replies)
+    assert any("✅" in reply for reply in r2.replies)
+    assert len([c for c in h["gh"].calls if c[0] == "commit_entry"]) == 2
+    assert not commit_guard.is_in_flight(USER) and not commit_guard.is_in_flight(user2)
 
 
 CHAT_ID = 77001

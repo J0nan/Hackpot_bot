@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.bot import pending_edits
+from app.bot import commit_guard, pending_edits
 from app.bot.flow_messages import (
     _DESC_MAX,
+    COMMIT_IN_PROGRESS,
     COMMIT_PUBLIC_REMINDER,
     COMMIT_REJECTED,
     COMMITTED_REPLY,
@@ -29,7 +30,7 @@ from app.bot.flow_messages import (
 )
 from app.bot.flow_types import ConfirmKB, FlowResult
 from app.bot.flow_utils import PARSE_HTML, _code_block, _first_paragraph, _html_escape, _transition
-from app.db.repository import get_github_token, set_resource_state, upsert_mirror_link
+from app.db.repository import get_github_token, get_resource, set_resource_state, upsert_mirror_link
 from app.logging_config import get_logger
 from app.security.sanitizers import sanitize_line
 from app.security.token_store import decrypt_pat
@@ -206,12 +207,33 @@ class ConfirmMixin:
 
 
     async def handle_confirm(self, user_id: int) -> FlowResult:
+        """✅ Commit, guarded against rapid presses.
+
+        aiogram runs every callback in its own task and the resource only
+        flips to COMMITTED after the slow GitHub round-trip — without a gate,
+        each press in that window would commit, and the losers would answer
+        GitHub's dedup warning right next to the success message.
+        ``commit_guard`` serializes per user: the winner runs the commit,
+        concurrent presses get COMMIT_IN_PROGRESS and never reach GitHub. The
+        claim is released in a ``finally``, so a failed commit leaves ✅
+        pressable again."""
         resource = await self._active(user_id)
         if resource is None:
             return FlowResult((NOTHING_PENDING,))
         pending_edits.clear_marker(resource.id)
         if resource.state != "CONFIRMING":
             return FlowResult((CONFIRMING_HINT,))
+        if not commit_guard.begin(user_id):
+            await self._log("commit_in_flight", user_id, resource.id)
+            return FlowResult((COMMIT_IN_PROGRESS,))
+        try:
+            return await self._commit_confirmed(user_id, resource)
+        finally:
+            commit_guard.release(user_id)
+
+
+    async def _commit_confirmed(self, user_id: int, resource: Any) -> FlowResult:
+        """The claimed commit body — runs at most once per user at a time."""
         stored = await get_github_token(self.deps.conn, user_id)
         if stored is None:
             await self._log("confirm_missing_pat", user_id, resource.id)
@@ -242,6 +264,22 @@ class ConfirmMixin:
                 _first_paragraph(resource.context),
             )
         except DuplicateError as exc:
+            fresh = await get_resource(self.deps.conn, resource.id)
+            if fresh is not None and fresh.state == "COMMITTED":
+                # A companion press (or a pre-restart run) landed this very
+                # resource while this commit was in flight: GitHub's dedup is
+                # telling the loser it is already on file — a success here.
+                logger.info("commit_duplicate_resolved res=%s", resource.id)
+                await self._log(
+                    "commit_duplicate_resolved", user_id, resource.id, detail=str(exc)
+                )
+                url = fresh.commit_url or resource.url
+                return FlowResult(
+                    (
+                        COMMITTED_REPLY.format(status="already committed", url=url),
+                        f"Everything is on file in the audit trail (resource #{resource.id}).",
+                    )
+                )
             logger.warning("commit_duplicate res=%s: %s", resource.id, str(exc))
             await self._log("commit_duplicate", user_id, resource.id, detail=str(exc))
             return FlowResult((str(exc),))
