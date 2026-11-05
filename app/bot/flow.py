@@ -205,10 +205,6 @@ ALREADY_COMMITTED_OUTSIDE = (
     "(added outside this bot) — nothing new was created."
 )
 ANALYZING = "🤔 Analyzing… send /cancel anytime"  # L7-4: shown before the slow call
-DECISION_FAILED_USER = (
-    "The decision model could not classify this resource just now. Nothing was "
-    "committed — you can send the link again later or use /cancel."
-)
 DECISION_UNRELIABLE_USER = (
     "🤖 The decision model did not return a reliable result — nothing was "
     "suggested. Pick a folder below, or send a few words about this resource "
@@ -864,11 +860,27 @@ class ResourceFlow:
             )
         except DecisionError as exc:  # L7-5: status/message audited, never shown raw
             safe = str(exc)
-            await set_resource_state(self.deps.conn, resource.id, "FAILED", error=safe)
-            _transition(resource.id, resource.state, "FAILED")
+            # unreliable-decision-retry: a hard failure means the model returned
+            # no value either — keep the flow alive on the folders + context
+            # retry step instead of the dead FAILED end. The detail stays in
+            # the resources row, the audit trail and the empty decision row.
+            await record_decision(
+                self.deps.conn,
+                resource.id,
+                request_id="",
+                folder_choice="",
+                confidence=0.0,
+                probabilities={},
+                needs_admin=None,
+                raw_json={"error": safe},
+            )
+            await set_resource_state(
+                self.deps.conn, resource.id, "AWAITING_PLACEMENT", error=safe
+            )
+            _transition(resource.id, resource.state, "AWAITING_PLACEMENT")
             logger.warning("decision_failed res=%s: %s", resource.id, safe)
             await self._log("decision_failed", user_id, resource.id, detail=safe)
-            return FlowResult((DECISION_FAILED_USER,))
+            return await self._no_candidates_step(user_id)
 
         top = result.candidates[0] if result.candidates else None
         await record_decision(

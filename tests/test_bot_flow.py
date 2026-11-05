@@ -426,7 +426,7 @@ async def test_summary_path_records_context_then_classifies(h: dict) -> None:
     assert resource.state == "AWAITING_PLACEMENT"
 
 
-async def test_decision_failure_fails_resource_and_audits_without_leaks(h: dict) -> None:
+async def test_decision_hard_failure_offers_folders_and_context_retry(h: dict) -> None:
     h["decision"].error = DecisionError(
         "decision API rejected the request after 3 attempt(s) with HTTP 503: backend busy"
     )
@@ -435,14 +435,28 @@ async def test_decision_failure_fails_resource_and_audits_without_leaks(h: dict)
     result = await flow.handle_text(USER, "jonan", GITHUB_URL)
     text = "\n".join(result.replies)
     assert "503" not in text and "HTTP" not in text  # no internal detail to user
-    created = h["conn"].execute("SELECT * FROM resources ORDER BY id DESC LIMIT 1")
-    async with created as cursor:
-        row = await cursor.fetchone()
-    assert row["state"] == "FAILED"
-    assert "503" in row["error"]
+    assert "reliable" in text.lower()  # the model's failure is stated plainly
+    assert isinstance(result.keyboard, FoldersKB)  # every folder shown right away
+
+    resource = await get_active_resource_for_user(h["conn"], USER)
+    assert resource is not None and resource.state == "AWAITING_PLACEMENT"  # flow survives
+    assert "503" in resource.error  # the detail stays in the DB row
     rows = await _audit(h, "decision_failed")
     assert "503" in rows[-1]["detail"]
-    assert await get_active_resource_for_user(h["conn"], USER) is None  # FAILED is final
+    async with h["conn"].execute(
+        "SELECT folder_choice, raw_json FROM decisions WHERE resource_id = ?", (resource.id,)
+    ) as cur:
+        row = dict(await cur.fetchone())
+    assert row["folder_choice"] == ""  # the empty row drives the retry gating
+    assert "503" in row["raw_json"]
+
+    # sending context re-runs the classification; a healthy answer resumes the card
+    h["decision"].error = None
+    result = await flow.handle_text(USER, "jonan", "A tool that dumps Windows credentials")
+    assert isinstance(result.keyboard, CandidatesKB)
+    content = h["decision"].calls[-1]["content"]
+    assert "A tool that dumps Windows credentials" in content
+    assert "Readme magic body" in content  # original context kept
 
 
 # ------------------------------------------------- unreliable decision retry

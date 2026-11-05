@@ -311,10 +311,11 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
   drops it.
 - **Pick a folder** — the candidate buttons show the model's confidence; `📂 Other folder…`
   lists every configured leaf, paged, so you can always override the decision. Arbitrary
-  paths are never accepted. If no folder clears the confidence bar, the bot tells you the
-  model did not return a reliable result, lists **every folder right away**, and invites
-  one text message of extra context — it is appended to the classification context and
-  the model is asked again (repeat until you're satisfied, or just pick a folder).
+  paths are never accepted. If no folder clears the confidence bar — or the model call
+  fails outright after its internal retries — the bot tells you the model did not return
+  a reliable result, lists **every folder right away**, and invites one text message of
+  extra context — it is appended to the classification context and the model is asked
+  again (repeat until you're satisfied, or just pick a folder).
 - **Answer the interview** — display name, one-line description (what it does and why it
   matters), `type`, optional platform tags. `none` skips platforms.
 - **Confirm** — the preview shows the exact bullet; ✅ commits to `TARGET_BRANCH`, ❌ or
@@ -456,4 +457,4 @@ deployment (L11-d):
 | Container exits at startup and `docker compose ps` shows `Restarting` | A required variable is missing/invalid (empty `CATEGORIES_JSON`, a key that is not `NN_Domain/Sub_Category`, a non-`https` `QWEN_API_URL`, an invalid Fernet key, a bad `AUTHORIZED_USERS`). Settings validate before any I/O, so `docker compose logs bot` names the offending variable — fix `.env` and `docker compose up -d`. |
 | `attempt to write a readonly database` | `DB_PATH` points outside `/app/data` (the rootfs is read-only). Unset it, or keep it under `/app/data/`. |
 | The bot ignores messages | That Telegram ID is not in `AUTHORIZED_USERS` — IDs, not usernames. Recreate the container after editing `.env`. |
-| Nothing happens after `🤔 Analyzing…` for a minute | The decision API is retrying (worst case ~93 s). `/cancel` aborts the resource; check the `decision_failed` audit row and `QWEN_API_URL`/`QWEN_API_KEY`. |
+| Nothing happens after `🤔 Analyzing…` for a minute | The decision API is retrying (worst case ~93 s). Then every folder is listed so you can pick manually, or send a few words of extra context to classify again. Check the `decision_failed` audit row and `QWEN_API_URL`/`QWEN_API_KEY`. |
