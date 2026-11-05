@@ -25,6 +25,7 @@ from app.bot.flow import (
     ConfirmKB,
     FlowResult,
     FoldersKB,
+    ManualKB,
     ResourceFlow,
     ResumeKB,
     SLOW_DOWN,
@@ -55,7 +56,9 @@ def render_keyboard(deps: AppDeps, result: FlowResult) -> InlineKeyboardMarkup |
     if isinstance(spec, CandidatesKB):
         return keyboards.candidates_kb(list(spec.candidates), folders)
     if isinstance(spec, FoldersKB):
-        return keyboards.folders_kb(folders, page=spec.page, manual=spec.manual)
+        return keyboards.folders_kb(folders, page=spec.page)
+    if isinstance(spec, ManualKB):
+        return keyboards.manual_kb()
     if isinstance(spec, TypeKB):
         return keyboards.type_kb()
     if isinstance(spec, ConfirmKB):

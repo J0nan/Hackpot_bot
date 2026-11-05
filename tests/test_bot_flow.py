@@ -33,6 +33,7 @@ from app.bot.flow import (
     FlowResult,
     FoldersKB,
     GREETING_READY,
+    ManualKB,
     NOTHING_PENDING,
     PREVIEW,
     ResourceFlow,
@@ -438,7 +439,7 @@ async def test_decision_hard_failure_offers_folders_and_context_retry(h: dict) -
     text = "\n".join(result.replies)
     assert "503" not in text and "HTTP" not in text  # no internal detail to user
     assert "reliable" in text.lower()  # the model's failure is stated plainly
-    assert isinstance(result.keyboard, FoldersKB)  # every folder shown right away
+    assert isinstance(result.keyboard, ManualKB)  # manual-or-cancel, folders stay hidden
 
     resource = await get_active_resource_for_user(h["conn"], USER)
     assert resource is not None and resource.state == "AWAITING_PLACEMENT"  # flow survives
@@ -471,7 +472,7 @@ def _empty_decision() -> ClassificationResult:
     )
 
 
-async def test_decision_without_value_shows_all_folders_and_asks_context(h: dict) -> None:
+async def test_decision_without_value_offers_manual_or_cancel_and_asks_context(h: dict) -> None:
     h["decision"].result = _empty_decision()
     flow = h["flow"]
     await _capture_token(h)
@@ -479,15 +480,12 @@ async def test_decision_without_value_shows_all_folders_and_asks_context(h: dict
 
     resource = await get_active_resource_for_user(h["conn"], USER)
     assert resource.state == "AWAITING_PLACEMENT"
-    assert isinstance(result.keyboard, FoldersKB)  # every folder, not "go press Other folder…"
-    assert result.parse_mode == "HTML"
+    assert isinstance(result.keyboard, ManualKB)  # ONLY manual-classify / cancel
     lowered = "\n".join(result.replies).lower()
     assert "reliable" in lowered  # the model told them so plainly
-    assert "context" in lowered  # and the text-retry invite is visible
-    caption = result.replies[-1]
-    assert "Choose destination folder" in caption
-    for folder in FOLDERS:  # all configured leaves are on the card
-        assert folder.partition("/")[2].replace("_", " ") in caption
+    assert "context" in lowered  # the text-retry invite is visible
+    assert "manual" in lowered  # and the manual route is named
+    assert "OSINT" not in lowered and "Android" not in lowered  # no folders yet
 
     async with h["conn"].execute(
         "SELECT folder_choice, confidence FROM decisions WHERE resource_id = ?", (resource.id,)
@@ -525,13 +523,13 @@ async def test_context_retry_still_unreliable_re_offers_folders_armed(h: dict) -
     await flow.handle_text(USER, "jonan", GITHUB_URL)
 
     result = await flow.handle_text(USER, "jonan", "first extra note")
-    assert isinstance(result.keyboard, FoldersKB)  # still nothing reliable: folders again
+    assert isinstance(result.keyboard, ManualKB)  # still nothing reliable: offer again
     result = await flow.handle_text(USER, "jonan", "   ")  # empty context re-asks, no call spent
-    assert isinstance(result.keyboard, FoldersKB)
+    assert isinstance(result.keyboard, ManualKB)
     assert len(h["decision"].calls) == 2  # whitespace did not hit the model again
 
     result = await flow.handle_text(USER, "jonan", "second extra note")
-    assert isinstance(result.keyboard, FoldersKB)
+    assert isinstance(result.keyboard, ManualKB)
     content = h["decision"].calls[-1]["content"]
     assert "first extra note" in content and "second extra note" in content
     assert len(h["decision"].calls) == 3
@@ -549,7 +547,7 @@ async def test_continue_re_offers_unreliable_step_and_arms_retry(h: dict) -> Non
     assert isinstance(result.keyboard, ResumeKB)
 
     resumed = await flow.handle_callback(USER, "jonan", "keep")
-    assert isinstance(resumed.keyboard, FoldersKB)
+    assert isinstance(resumed.keyboard, ManualKB)
     assert "reliable" in "\n".join(resumed.replies).lower()  # the step as first shown, invite and all
 
     await flow.handle_text(USER, "jonan", "context after guard")  # now consumed as retry
@@ -561,12 +559,13 @@ async def test_manual_classify_ends_the_context_invite(h: dict) -> None:
     flow = h["flow"]
     await _capture_token(h)
     result = await flow.handle_text(USER, "jonan", GITHUB_URL)
-    assert result.keyboard.manual is True  # the ask offers the manual route and cancel
+    assert isinstance(result.keyboard, ManualKB)  # the initial ask: manual or cancel only
 
     result = await flow.handle_callback(USER, "jonan", "m")
-    assert isinstance(result.keyboard, FoldersKB)
-    assert result.keyboard.manual is False  # plain picker from here on
+    assert isinstance(result.keyboard, FoldersKB)  # the full picker opens only now
     assert "manual" in "\n".join(result.replies).lower()
+    assert "Choose destination folder" in result.replies[-1]
+    assert "OSINT" in result.replies[-1]  # all configured leaves are on the card
 
     calls = len(h["decision"].calls)
     result = await flow.handle_text(USER, "jonan", "a few words")  # NOT context any more
@@ -575,8 +574,7 @@ async def test_manual_classify_ends_the_context_invite(h: dict) -> None:
     assert len(h["decision"].calls) == calls  # the model was not consulted
 
     resumed = await flow.handle_callback(USER, "jonan", "keep")  # step stays button-driven
-    assert isinstance(resumed.keyboard, FoldersKB)
-    assert not resumed.keyboard.manual
+    assert isinstance(resumed.keyboard, FoldersKB)  # the plain picker, no context invite
     again = await flow.handle_text(USER, "jonan", "still not context")
     assert again.replies == (FLOW_INTERRUPTED,)
 

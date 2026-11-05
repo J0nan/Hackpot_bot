@@ -266,9 +266,9 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
         ▼
  decision model over CATEGORIES_JSON ──▶ candidate buttons (probability ≥ threshold,
         top MAX_CANDIDATES_SHOWN) + "📂 Other folder…" (every configured leaf, paged)
-            │ no folder clears the bar: the bot says the model was not reliable,
-            │ lists every folder at once, and one text message adds context → re-classify;
-            │ 🛠️ Manual classify (ends the text invite) / ❌ Cancel ride on every page
+            │ no folder clears the bar: the bot says the model was not reliable
+            │ and asks — 🛠️ Manual classify (opens the full picker, ends the
+            │ text invite) / ❌ Cancel — or one text message adds context → retry
         │
         ▼
  entry interview: name → description → type → platforms  (GitHub metadata prefilled)
@@ -314,12 +314,11 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
   lists every configured leaf, paged, so you can always override the decision. Arbitrary
   paths are never accepted. If no folder clears the confidence bar — or the model call
   fails outright after its internal retries — the bot tells you the model did not return
-  a reliable result, lists **every folder right away**, and gives three routes: send one
-  text message of extra context (appended to the classification context, the model is
-  asked again), press **🛠️ Manual classify** to take over — the text invite ends, later
-  text hits the normal Continue/Cancel guard and is never read as context, pick a folder
-  number to place it — or press **❌ Cancel** to drop the resource. The 🛠️/❌ offer stays
-  on every page of the picker while that step is live.
+  a reliable result and **asks, with two buttons only**: **🛠️ Manual classify** opens the
+  full numbered folder picker and ends the text invite (later text hits the normal
+  Continue/Cancel guard and is never read as context), **❌ Cancel** drops the resource.
+  Until you press one, a text message is the third route: it is appended to the
+  classification context and the model is asked again (repeat until satisfied).
 - **Answer the interview** — display name, one-line description (what it does and why it
   matters), `type`, optional platform tags. `none` skips platforms.
 - **Confirm** — the preview shows the exact bullet; ✅ commits to `TARGET_BRANCH`, ❌ or
@@ -461,4 +460,4 @@ deployment (L11-d):
 | Container exits at startup and `docker compose ps` shows `Restarting` | A required variable is missing/invalid (empty `CATEGORIES_JSON`, a key that is not `NN_Domain/Sub_Category`, a non-`https` `QWEN_API_URL`, an invalid Fernet key, a bad `AUTHORIZED_USERS`). Settings validate before any I/O, so `docker compose logs bot` names the offending variable — fix `.env` and `docker compose up -d`. |
 | `attempt to write a readonly database` | `DB_PATH` points outside `/app/data` (the rootfs is read-only). Unset it, or keep it under `/app/data/`. |
 | The bot ignores messages | That Telegram ID is not in `AUTHORIZED_USERS` — IDs, not usernames. Recreate the container after editing `.env`. |
-| Nothing happens after `🤔 Analyzing…` for a minute | The decision API is retrying (worst case ~93 s). Then every folder is listed so you can pick manually, or send a few words of extra context to classify again. Check the `decision_failed` audit row and `QWEN_API_URL`/`QWEN_API_KEY`. |
+| Nothing happens after `🤔 Analyzing…` for a minute | The decision API is retrying (worst case ~93 s). Then the bot asks: send a few words to re-classify with that context, press `🛠️ Manual classify` for the full folder picker, or `❌ Cancel`. Check the `decision_failed` audit row and `QWEN_API_URL`/`QWEN_API_KEY`. |

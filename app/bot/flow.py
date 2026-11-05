@@ -207,8 +207,9 @@ ALREADY_COMMITTED_OUTSIDE = (
 ANALYZING = "🤔 Analyzing… send /cancel anytime"  # L7-4: shown before the slow call
 DECISION_UNRELIABLE_USER = (
     "🤖 The decision model did not return a reliable result — nothing was "
-    "suggested. Pick a folder below, or send a few words about this resource "
-    "and I'll classify it again with that extra context."
+    "suggested. Send a few words about this resource and I'll classify it "
+    "again with that extra context, or press 🛠️ Manual classify to pick a "
+    "folder yourself."
 )
 MANUAL_PLACEMENT_NOTE = (
     "🛠️ Manual classification it is — pick a folder by its number below. "
@@ -323,7 +324,11 @@ class CandidatesKB:
 @dataclass(frozen=True)
 class FoldersKB:
     page: int = 0
-    manual: bool = False  # unreliable-decision-retry S6: offer manual/cancel rows
+
+
+@dataclass(frozen=True)
+class ManualKB:
+    """Unreliable-decision ask: 🛠️ Manual classify / ❌ Cancel, no folders yet (S6)."""
 
 
 @dataclass(frozen=True)
@@ -359,7 +364,7 @@ class FlowResult:
     """
 
     replies: tuple[str, ...] = ()
-    keyboard: CandidatesKB | FoldersKB | TypeKB | ConfirmKB | ResumeKB | None = None
+    keyboard: CandidatesKB | FoldersKB | ManualKB | TypeKB | ConfirmKB | ResumeKB | None = None
     delete_message: bool = False
     new_message: bool = False
     parse_mode: str | None = None
@@ -939,20 +944,17 @@ class ResourceFlow:
     async def _no_candidates_step(self, user_id: int, resource_id: int) -> FlowResult:
         """The ask shown when the model produced no candidate (unreliable-decision-retry S1).
 
-        Full picker page 0 plus the context invite and the 🛠️/❌ offer row; the
+        The message and the choice keyboard only — no folders yet: 🛠️ Manual
+        classify opens the full picker (S6), ❌ Cancel drops the resource. The
         user is armed so exactly the next text update re-runs the classification
-        with it, any button press ends the invite (flow-interrupt-rearm S5), and
-        ▶️ Continue re-offers this step armed again — unless the resource was
-        already switched to manual placement (S6), which stays button-driven.
+        with extra context, any button press ends the invite
+        (flow-interrupt-rearm S5), and ▶️ Continue re-offers this step armed
+        again — unless manual placement was already chosen, which stays
+        button-driven on the plain picker.
         """
         if not manual_placement.is_marked(resource_id):
             rearm.arm(user_id)
-        step = await self.handle_more_folders(user_id, 0)
-        return FlowResult(
-            (DECISION_UNRELIABLE_USER, *step.replies),
-            keyboard=step.keyboard,
-            parse_mode=PARSE_HTML,
-        )
+        return FlowResult((DECISION_UNRELIABLE_USER,), keyboard=ManualKB())
 
     async def _latest_decision_unreliable(self, resource_id: int) -> bool:
         """True when the newest decision row recorded no folder above threshold."""
@@ -991,26 +993,12 @@ class ResourceFlow:
     # -- placement ---------------------------------------------------------------- #
 
     async def handle_more_folders(self, user_id: int, page: int = 0) -> FlowResult:
-        """Numbered picker: full readable paths in an HTML caption, numbers as buttons.
-
-        While the unreliable-decision step is live (placement pending, no
-        candidate, manual not chosen yet) the 🛠️/❌ offer rides on EVERY page,
-        so paging through the list never hides the manual route.
-        """
+        """Numbered picker: full readable paths in an HTML caption, numbers as buttons."""
         page = max(0, int(page))
         folders = sorted(self.deps.settings.categories)
-        manual = False
-        resource = await self._active(user_id)
-        if (
-            resource is not None
-            and resource.state == "AWAITING_PLACEMENT"
-            and not manual_placement.is_marked(resource.id)
-            and await self._latest_decision_unreliable(resource.id)
-        ):
-            manual = True
         return FlowResult(
             (folder_picker.folders_list_html(folders, page),),
-            keyboard=FoldersKB(page=page, manual=manual),
+            keyboard=FoldersKB(page=page),
             parse_mode=PARSE_HTML,
         )
 
@@ -1019,10 +1007,10 @@ class ResourceFlow:
 
         Marks the resource (process-local, app/bot/manual_placement.py) so the
         text-context invite is ended: later text is a stray message the
-        flow-interrupt gate guards, never classification context. The plain
-        picker is re-offered and the press itself already disarmed any armed
-        ask (handle_callback disarms every press). Valid only while placement
-        is pending.
+        flow-interrupt gate guards, never classification context. The full
+        numbered picker opens here for the first time, and the press itself
+        already disarmed any armed ask (handle_callback disarms every press).
+        Valid only while placement is pending.
         """
         resource = await self._active(user_id)
         if resource is None:

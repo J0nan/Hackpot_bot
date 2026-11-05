@@ -41,10 +41,10 @@ HELP_TEXT = (
     "answer the entry questions, and confirm the commit — made under your own "
     "account, to the configured branch.\n"
     "\n"
-    "If no folder clears the bar (or the model call fails) every folder is "
-    "listed right away: send a few words about the resource and I'll classify "
-    "again with that context, press 🛠️ Manual classify to pick by hand (text "
-    "then stops counting as context), or ❌ Cancel.\n"
+    "If no folder clears the bar (or the model call fails) I ask: send a few "
+    "words and I'll classify again with that context, press 🛠️ Manual classify "
+    "for the full folder picker (text then stops counting as context), or "
+    "❌ Cancel.\n"
     "\n"
     "Text answers (token, summary, interview, ✏️/🏷️ pastes) are taken "
     "directly. At button-driven steps (folder picker, confirmation) a typed "
@@ -106,20 +106,13 @@ def candidates_kb(
 
 
 def folders_kb(
-    folders_sorted: Sequence[str],
-    page: int = 0,
-    size: int = PAGE_SIZE,
-    manual: bool = False,
+    folders_sorted: Sequence[str], page: int = 0, size: int = PAGE_SIZE
 ) -> InlineKeyboardMarkup:
     """Number buttons (1..N, page-local) for the folders_list_html caption.
 
     Long leaf paths were unreadable on phones, so the full names moved to the
     HTML message (app/bot/folder_picker.py); the keyboard carries just the
     matching numbers, still resolving to global ``f:<i>`` index payloads.
-
-    ``manual`` adds the unreliable-decision-retry S6 offer row: one press ends
-    the text-context invite (🛠️ Manual classify) or drops the resource
-    (❌ Cancel — the existing callback the confirmation card also uses).
     """
     page, start, chunk = page_slice(folders_sorted, page, size)
     rows: list[list[InlineKeyboardButton]] = []
@@ -137,12 +130,25 @@ def folders_kb(
         nav.append(_button(NEXT_LABEL, f"p:{page + 1}"))
     if nav:
         rows.append(nav)
-    if manual:
-        rows.append([_button("🛠️ Manual classify", "m")])
-        rows.append([_button("❌ Cancel", "❌")])
     if not rows:  # empty category list can never happen (Settings validates), but stay safe
         rows.append([_button(OTHER_FOLDERS_LABEL, "o")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def manual_kb() -> InlineKeyboardMarkup:
+    """unreliable-decision-retry S6: the ask when the model returned no value.
+
+    A choice, not a picker: 🛠️ Manual classify opens the full folder list (and
+    ends the text-context invite), ❌ Cancel drops the resource. The folders
+    themselves only appear after the manual press, so the initial message
+    stays readable when the model is unreliable.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button("🛠️ Manual classify", "m")],
+            [_button("❌ Cancel", "❌")],
+        ]
+    )
 
 
 def type_kb() -> InlineKeyboardMarkup:
