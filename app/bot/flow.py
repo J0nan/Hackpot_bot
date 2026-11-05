@@ -41,7 +41,6 @@ offers the same two buttons."""
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -50,8 +49,79 @@ from typing import Any
 import aiosqlite
 import httpx
 
-from app.config import Settings
 from app.bot import folder_picker, manual_placement, pending_edits, rearm
+from app.bot.flow_confirm import ConfirmMixin
+from app.bot.flow_interview import InterviewMixin
+from app.bot.flow_messages import (
+    _DESC_MAX,
+    _MAX_CONTEXT_CHARS,
+    _NAME_MAX,
+    ALREADY_COMMITTED,
+    ALREADY_COMMITTED_OUTSIDE,
+    ALREADY_IN_PROGRESS,
+    ANALYZING,
+    ASK_CONTEXT,
+    ASK_DESCRIPTION,
+    ASK_NAME,
+    ASK_PAT_START,
+    ASK_PLATFORMS,
+    ASK_SUMMARY,
+    ASK_TYPE,
+    CANCELLED_MSG,
+    COMMIT_PUBLIC_REMINDER,
+    COMMIT_REJECTED,
+    COMMITTED_REPLY,
+    CONFIRMING_HINT,
+    DECISION_UNRELIABLE_USER,
+    DECRYPT_FAILED,
+    EDIT_DESC_ASK,
+    EDIT_DESC_EMPTY,
+    EDIT_DESC_ONE_LINE,
+    EDIT_DESC_TOO_LONG,
+    EDIT_NO_TYPE_TAG,
+    EDIT_RETRY_DETAIL_MAX,
+    EDIT_TAGS_ASK,
+    EDIT_TAGS_COLON,
+    EDIT_TYPE_VALUE,
+    EDIT_UNAVAILABLE,
+    ENTRY_BUILD_FAILED,
+    FLOW_INTERRUPTED,
+    FORGOTTEN,
+    GREETING_READY,
+    INVALID_FIELD,
+    INVALID_TYPE,
+    MANUAL_PLACEMENT_NOTE,
+    NEED_TOKEN_FOR_LINK,
+    NEEDS_ADMIN_NOTE,
+    NEEDS_ADMIN_THRESHOLD,
+    NOTHING_PENDING,
+    PAT_SAVED,
+    PAT_STILL_NEEDED,
+    PLACED,
+    PLACEMENT_HINT,
+    PREVIEW,
+    README_EXCERPT_CHARS,
+    SLOW_DOWN,
+    STATS_EMPTY,
+    STATS_NO_COMMITS,
+    STATS_TAGS_EMPTY,
+    SUMMARY_MAX_CHARS,
+    UNKNOWN_CALLBACK,
+    UNKNOWN_FOLDER,
+    USAGE_HINT,
+)
+from app.bot.flow_stats import StatsMixin
+from app.bot.flow_types import (
+    CandidatesKB,
+    ConfirmKB,
+    FlowResult,
+    FoldersKB,
+    ManualKB,
+    ResumeKB,
+    TypeKB,
+)
+from app.bot.flow_utils import PARSE_HTML, _dump_iv, _first_paragraph, _load_iv, _transition
+from app.config import Settings
 from app.db.database import ACTIVE_STATES
 from app.db.repository import (
     audit,
@@ -61,279 +131,102 @@ from app.db.repository import (
     get_active_resource_for_user,
     get_github_token,
     get_resource,
-    get_upload_leaderboard,
     list_resources_by_states,
     record_decision,
     save_github_token,
     set_resource_state,
-    upsert_mirror_link,
     upsert_user,
 )
 from app.logging_config import get_logger
 from app.security.rate_limit import RateLimiter
 from app.security.sanitizers import sanitize_line, sanitize_url
 from app.security.token_store import decrypt_pat, encrypt_pat, looks_like_token, mask
-from app.services.decision import DecisionClient, DecisionError, FolderCandidate
+from app.services.decision import DecisionClient, DecisionError
 from app.services.github import (
-    LEGACY_COST_TAGS,
     ENTRY_TYPES,
-    DuplicateError,
-    EntryLineError,
     FetchError,
     GitHubClient,
-    build_entry_line,
     canonical_url_key,
-    leaf_title_from_path,
-    parse_entry_line,
     parse_repo_url,
 )
 
-README_EXCERPT_CHARS = 6000
-SUMMARY_MAX_CHARS = 6000
-_STATS_DISPLAY_LIMIT = 10
-
-
-def _medal(rank: int) -> str:
-    return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"{rank}.")
-
-
-def _links_noun(count: int) -> str:
-    return f"{count} {'link' if count == 1 else 'links'}"
-
-
-_NAME_MAX = 120
-_DESC_MAX = 500
-_MAX_CONTEXT_CHARS = 2 * SUMMARY_MAX_CHARS
-IV_FIELDS: tuple[str, ...] = ("name", "description", "type", "platforms")
-NEEDS_ADMIN_THRESHOLD = 0.5
-
 URL_RE = re.compile(r"https?://\S+")
 DUPLICATE_ELIGIBLE_STATES: tuple[str, ...] = ACTIVE_STATES + ("COMMITTED",)
-_TOKEN_SPLIT_RE = re.compile(r"[\s,;]+")
-_PLATFORM_UNSAFE = set("`|'\"\\[](){}")
 _INDEX_RE = re.compile(r"^\d+$", re.ASCII)
 
 ProgressSink = Callable[[str], Awaitable[None]]
 
 logger = get_logger(__name__)
 
-
-def _transition(resource_id: Any, old: str, new: str) -> None:
-    """DEBUG state transition with the ``res=<id>`` correlation token."""
-    logger.debug("state res=%s %s->%s", resource_id, old, new)
-
-
-SLOW_DOWN = "You are sending too fast — please slow down and try again in a minute."
-ASK_PAT_START = (
-    "👋 Welcome, Hackpoter! First, send me your GitHub Personal Access Token "
-    "as one bare message.\n"
-    "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
-    "Set the following:\n"
-    "    - Expiration to 'No expiration'.\n"
-    "    - Select 'Only selected repositories' and choose the 'Hackpot' repo on the Repository access.\n"
-    "    - Under 'Repository permissions', select 'Add permissions' then add 'Contents' and set it to 'Read and write'.\n\n"
-    "Generate the token, copy it, and send it to me as one bare message.\n"
-    "I will store it encrypted. It is used to commit the resource under your own GitHub account.\n"
-    "Remember: all links must be public."
-)
-GREETING_READY = (
-    "👋 Welcome back! Send the https link of the resource you want indexed. GitHub "
-    "repo links are read automatically; for anything else I will ask you for a "
-    "short summary.\nRemember: all links must be public."
-)
-PAT_SAVED = (
-    "✅ Token stored (encrypted). Send the https link of the resource you want "
-    "indexed. \nRemember: all links must be public."
-)
-PAT_STILL_NEEDED = (
-    "I still need your GitHub token, send the bare token as one message "
-    "(stored encrypted, never echoed back)."
-)
-NEED_TOKEN_FOR_LINK = (
-    "Before I can index that link, send me your GitHub Personal Access Token.\n"
-    "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
-    "Set the following:\n"
-    "    - Expiration to 'No expiration'.\n"
-    "    - Select 'Only selected repositories' and choose the 'Hackpot' repo on the Repository access.\n"
-    "    - Under 'Repository permissions', select 'Add permissions' then add 'Contents' and set it to 'Read and write'.\n\n"
-    "Generate the token, copy it, and send it to me as one bare message.\n"
-    "I will store it encrypted. It is used to commit the resource under your own GitHub account.\n"
-    "Remember: all links must be public."
-)
-USAGE_HINT = (
-    "Send exactly one https link (for example https://github.com/owner/repo). For a "
-    "non-GitHub resource, send just its link and I will ask for a summary. "
-    "Remember: all links must be public."
-)
-ASK_SUMMARY = (
-    "Send me a short summary of what that resource is about — remember: all "
-    "links must be public."
-)
-ALREADY_COMMITTED = "⚠️ That link is already on file in 📁 {folder} — nothing new was created."
-ALREADY_IN_PROGRESS = (
-    "⚠️ That link is already being processed (resource #{resource_id}{folder_part}). "
-    "It has not been committed yet — try again once it finishes."
-)
-ALREADY_COMMITTED_OUTSIDE = (
-    "⚠️ That link is already listed in 📁 {folder} of the Hackpot repo "
-    "(added outside this bot) — nothing new was created."
-)
-ANALYZING = "🤔 Analyzing… send /cancel anytime"
-DECISION_UNRELIABLE_USER = (
-    "🤖 The decision model did not return a reliable result — nothing was "
-    "suggested. Send a few words about this resource and I'll classify it "
-    "again with that extra context, or press 🛠️ Manual classify to pick a "
-    "folder yourself."
-)
-MANUAL_PLACEMENT_NOTE = (
-    "🛠️ Manual classification it is — pick a folder by its number below. "
-    "Text messages no longer count as classification context for this resource."
-)
-PLACEMENT_HINT = (
-    "Pick a destination folder — press its number above (📂 Other folder… "
-    "lists every category)."
-)
-UNKNOWN_FOLDER = "That folder is not in the configured category list."
-ASK_NAME = "What display name should the entry use? (one line, no [ ] or backticks)"
-ASK_DESCRIPTION = (
-    "Now the description — one line: what it does and why it matters "
-    "(no [ ] or backticks)."
-)
-ASK_TYPE = "Pick the type tag:"
-ASK_PLATFORMS = (
-    "Optional platform/tech tags, space-separated (e.g. linux docker), "
-    'or send "none".'
-)
-ASK_CONTEXT = (
-    "Give me a one-line description of what this resource is — remember: all "
-    "links must be public."
-)
-INVALID_FIELD = "{label} can't contain [ ] or backticks — please re-send without them."
-INVALID_TYPE = f"Pick one of: {', '.join(ENTRY_TYPES)}."
-ENTRY_BUILD_FAILED = (
-    "Some collected answers can't form a valid entry line — let's re-check them."
-)
-PLACED = "Placing in 📁 {folder}."
-NEEDS_ADMIN_NOTE = (
-    "⚠️ The model flags this as sensitive — please double-check the placement "
-    "before committing."
-)
-PREVIEW = "Here is the entry bullet — confirm to commit:"
-COMMITTED_REPLY = "✅ {status} → {url}"
-COMMIT_REJECTED = (
-    "⛔ That destination is not one of the configured categories — nothing was "
-    "committed. Use /cancel, then send the link again."
-)
-CANCELLED_MSG = "🚫 Cancelled — nothing was uploaded. Send a new link any time."
-NOTHING_PENDING = "There is nothing pending to cancel. /start to begin."
-STATS_EMPTY = (
-    "🏆 No links have been committed yet — the leaderboard is waiting for its first 🥇."
-)
-STATS_TAGS_EMPTY = "🏷️ No tags on file yet — tags ride the committed entries."
-STATS_NO_COMMITS = "You have not committed any links yet."
-CONFIRMING_HINT = (
-    "Use the buttons above — ✅ Commit, ❌ Cancel, or ✏️ Description / 🏷️ Tags "
-    "to edit one field before committing — or /cancel to abort."
-)
-EDIT_DESC_ASK = (
-    "✏️ Copy the current description below, modify it (one line, no [ ] or "
-    "backticks, at most 500 characters), then send the new description back. "
-    "Nothing is committed until you press ✅ — the buttons above stay usable "
-    "meanwhile."
-)
-EDIT_TAGS_ASK = (
-    "🏷️ Copy the tags below, edit them on one line (the first tag must stay a "
-    "`type:` tag, the rest are plain platform tags), then send the new tags "
-    "back. Nothing is committed until you press ✅ — the buttons above stay "
-    "usable meanwhile."
-)
-EDIT_DESC_ONE_LINE = "The description must be one line — send it again without line breaks."
-EDIT_DESC_EMPTY = "The description is empty — send the new description on one line."
-EDIT_DESC_TOO_LONG = (
-    f"The description exceeds the {_DESC_MAX} character limit — shorten it and send it again."
-)
-EDIT_NO_TYPE_TAG = (
-    "Missing type tag: the first tag must be one of "
-    + ", ".join(f"`type:{tag}`" for tag in ENTRY_TYPES)
-    + " — fix it and send the tags again."
-)
-EDIT_TYPE_VALUE = (
-    "The type tag must be one of "
-    + ", ".join(ENTRY_TYPES)
-    + " — fix it and send the tags again."
-)
-EDIT_TAGS_COLON = (
-    "Platform tags must be plain words without ':' — only the first tag may "
-    "be a `type:` tag — fix it and send the tags again."
-)
-EDIT_UNAVAILABLE = "This entry can't be prepared for editing right now — use ✅ to commit or ❌ to cancel."
-EDIT_RETRY_DETAIL_MAX = 200
-FORGOTTEN = "🧹 Your stored GitHub token was deleted. /start to save a new one."
-DECRYPT_FAILED = (
-    "Your stored GitHub token could not be decrypted. Use /forget, then /start "
-    "to save a new one."
-)
-UNKNOWN_CALLBACK = "That button is no longer available — /start or send the link again."
-COMMIT_PUBLIC_REMINDER = " Remember: all links must be public."
-FLOW_INTERRUPTED = (
-    "⏸️ The step I am waiting on is driven by buttons, so I did not treat "
-    "that message as an answer. Press ▶️ Continue to re-send the current "
-    "step's message (its card may also invite a text reply), or ❌ Cancel "
-    "to drop this resource (or use /cancel anytime)."
-)
+__all__ = [
+    "ALREADY_COMMITTED",
+    "ALREADY_COMMITTED_OUTSIDE",
+    "ALREADY_IN_PROGRESS",
+    "ANALYZING",
+    "ASK_CONTEXT",
+    "ASK_DESCRIPTION",
+    "ASK_NAME",
+    "ASK_PAT_START",
+    "ASK_PLATFORMS",
+    "ASK_SUMMARY",
+    "ASK_TYPE",
+    "CANCELLED_MSG",
+    "COMMITTED_REPLY",
+    "COMMIT_PUBLIC_REMINDER",
+    "COMMIT_REJECTED",
+    "CONFIRMING_HINT",
+    "DECISION_UNRELIABLE_USER",
+    "DECRYPT_FAILED",
+    "EDIT_DESC_ASK",
+    "EDIT_DESC_EMPTY",
+    "EDIT_DESC_ONE_LINE",
+    "EDIT_DESC_TOO_LONG",
+    "EDIT_NO_TYPE_TAG",
+    "EDIT_RETRY_DETAIL_MAX",
+    "EDIT_TAGS_ASK",
+    "EDIT_TAGS_COLON",
+    "EDIT_TYPE_VALUE",
+    "EDIT_UNAVAILABLE",
+    "ENTRY_BUILD_FAILED",
+    "FLOW_INTERRUPTED",
+    "FORGOTTEN",
+    "GREETING_READY",
+    "INVALID_FIELD",
+    "INVALID_TYPE",
+    "MANUAL_PLACEMENT_NOTE",
+    "NEEDS_ADMIN_NOTE",
+    "NEED_TOKEN_FOR_LINK",
+    "NOTHING_PENDING",
+    "PAT_SAVED",
+    "PAT_STILL_NEEDED",
+    "PLACED",
+    "PLACEMENT_HINT",
+    "PREVIEW",
+    "README_EXCERPT_CHARS",
+    "SLOW_DOWN",
+    "STATS_EMPTY",
+    "STATS_NO_COMMITS",
+    "STATS_TAGS_EMPTY",
+    "SUMMARY_MAX_CHARS",
+    "UNKNOWN_CALLBACK",
+    "UNKNOWN_FOLDER",
+    "USAGE_HINT",
+    "AppDeps",
+    "CandidatesKB",
+    "ConfirmKB",
+    "FlowResult",
+    "FoldersKB",
+    "ManualKB",
+    "ResourceFlow",
+    "ResumeKB",
+    "TypeKB",
+    "make_decision_factory",
+    "make_github_factory",
+]
 
 
-@dataclass(frozen=True)
-class CandidatesKB:
-    candidates: tuple[FolderCandidate, ...]
 
 
-@dataclass(frozen=True)
-class FoldersKB:
-    page: int = 0
-
-
-@dataclass(frozen=True)
-class ManualKB:
-    """Unreliable-decision ask: 🛠️ Manual classify / ❌ Cancel, no folders yet."""
-
-
-@dataclass(frozen=True)
-class TypeKB:
-    pass
-
-
-@dataclass(frozen=True)
-class ConfirmKB:
-    folder: str
-
-
-@dataclass(frozen=True)
-class ResumeKB:
-    """▶️ Continue / ❌ Cancel under the prompt."""
-
-    pass
-
-
-@dataclass(frozen=True)
-class FlowResult:
-    """Actions for the handler: reply texts, one keyboard, delete this message.
-
-    ``new_message`` asks a callback answer to go out as fresh message(s) instead
-    of editing the button bubble — the ✏️ Description / 🏷️ Tags reply must
-    leave the ✅/❌ confirmation usable. ``parse_mode`` (e.g.
-    ``"HTML"``) is handed to every send of this result, so the flow can ship
-    pre-escaped code blocks without changing the bot-wide default (none): the
-    flow owns the escaping, the handler only renders. ``delete_outgoing``
-    names ``(chat_id, message_id)`` pairs the renderer must delete after
-    sending — only ever the card ids captured from the user's OWN button press, never caller-supplied values."""
-
-    replies: tuple[str, ...] = ()
-    keyboard: CandidatesKB | FoldersKB | ManualKB | TypeKB | ConfirmKB | ResumeKB | None = None
-    delete_message: bool = False
-    new_message: bool = False
-    parse_mode: str | None = None
-    delete_outgoing: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass
@@ -373,42 +266,19 @@ def make_decision_factory(
     return factory
 
 
-def _dump_iv(iv: dict[str, Any]) -> str:
-    return json.dumps(iv, sort_keys=True)
 
 
-def _load_iv(entry_line: str) -> dict[str, Any]:
-    """Partial interview answers ride in the whitelisted ``entry_line`` column
-    as JSON until the final bullet replaces them."""
-    if not entry_line:
-        return {}
-    try:
-        data = json.loads(entry_line)
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
-def _first_paragraph(text: str) -> str:
-    para = (text or "").strip().split("\n\n", 1)[0].strip()
-    return sanitize_line(para, _DESC_MAX)
 
 
-PARSE_HTML = "HTML"
 
 
-def _html_escape(text: str) -> str:
-    """Telegram HTML-entity escape: only ``&``, ``<`` and ``>`` are special."""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _code_block(text: str) -> str:
-    """One <pre> block: renders monospace, and copying it yields the value
-    verbatim. Escaped here so no payload can break markup."""
-    return f"<pre>{_html_escape(text)}</pre>"
 
 
-class ResourceFlow:
+class ResourceFlow(InterviewMixin, ConfirmMixin, StatsMixin):
     """One instance per process; all state lives in SQLite."""
 
     def __init__(self, deps: AppDeps) -> None:
@@ -990,16 +860,6 @@ class ResourceFlow:
             row = await cursor.fetchone()
         return None if row is None else row["needs_admin"]
 
-    @staticmethod
-    def _derive_step(resource: Any, iv: dict[str, Any]) -> str:
-        if not resource.folder:
-            return "folder"
-        if not resource.context:
-            return "context"
-        for field_name in IV_FIELDS:
-            if field_name not in iv:
-                return field_name
-        return "preview"
 
     _QUESTIONS: dict[str, tuple[str, Any]] = {
         "name": (ASK_NAME, None),
@@ -1010,302 +870,17 @@ class ResourceFlow:
         "context": (ASK_CONTEXT, None),
     }
 
-    async def _interview_text(self, user_id: int, resource: Any, text: str) -> FlowResult:
-        iv = _load_iv(resource.entry_line)
-        step = self._derive_step(resource, iv)
-        raw = (text or "").strip()
 
-        if step == "folder":
-            return FlowResult((PLACEMENT_HINT,))
-        if step == "context":
-            value = sanitize_line(raw, SUMMARY_MAX_CHARS)
-            if not value:
-                return FlowResult((ASK_CONTEXT,))
-            await set_resource_state(self.deps.conn, resource.id, "AWAITING_ENTRY_INFO", context=value)
-            return await self._advance(user_id, resource.id)
-        if step == "name":
-            return await self._answer_line(user_id, resource, iv, "name", raw, _NAME_MAX)
-        if step == "description":
-            return await self._answer_line(user_id, resource, iv, "description", raw, _DESC_MAX)
-        if step == "type":
-            value = raw.lower()
-            if value not in ENTRY_TYPES:
-                await self._log("entry_rejected", user_id, resource.id, detail="field=type")
-                return FlowResult((INVALID_TYPE,), TypeKB())
-            return await self._answer_field(user_id, resource, iv, "type", value)
-        if step == "platforms":
-            tokens = [t for t in _TOKEN_SPLIT_RE.split(raw) if t]
-            if not tokens or tokens == ["none"]:
-                return await self._answer_field(user_id, resource, iv, "platforms", [])
-            cleaned: list[str] = []
-            for token in tokens:
-                tag = sanitize_line(token, 40)
-                if not tag or any(ch in _PLATFORM_UNSAFE for ch in tag):
-                    await self._log("entry_rejected", user_id, resource.id, detail="field=platforms")
-                    return FlowResult((ASK_PLATFORMS,))
-                cleaned.append(tag.lower())
-            return await self._answer_field(user_id, resource, iv, "platforms", cleaned)
-        return await self._build_preview(user_id, resource)
 
-    async def _answer_line(
-        self, user_id: int, resource: Any, iv: dict[str, Any], field_name: str, raw: str, limit: int
-    ) -> FlowResult:
-        """Sanitize, then reject brackets/backticks."""
-        value = sanitize_line(raw, limit)
-        if not value or any(ch in value for ch in ("[", "]", "`")):
-            await self._log("entry_rejected", user_id, resource.id, detail=f"field={field_name}")
-            return FlowResult((INVALID_FIELD.format(label=field_name.capitalize()),))
-        return await self._answer_field(user_id, resource, iv, field_name, value)
 
-    async def _answer_field(
-        self, user_id: int, resource: Any, iv: dict[str, Any], field_name: str, value: Any
-    ) -> FlowResult:
-        iv[field_name] = value
-        await set_resource_state(
-            self.deps.conn, resource.id, "AWAITING_ENTRY_INFO", entry_line=_dump_iv(iv)
-        )
-        await self._log("entry_stored", user_id, resource.id, detail=f"field={field_name}")
-        return await self._advance(user_id, resource.id)
 
-    async def _advance(self, user_id: int, resource_id: int) -> FlowResult:
-        resource = await get_resource(self.deps.conn, resource_id)
-        iv = _load_iv(resource.entry_line)
-        step = self._derive_step(resource, iv)
-        if step == "preview":
-            return await self._build_preview(user_id, resource)
-        text, keyboard = self._QUESTIONS[step]
-        return FlowResult((text,), keyboard)
 
-    async def _build_preview(self, user_id: int, resource: Any) -> FlowResult:
-        iv = _load_iv(resource.entry_line)
-        try:
-            line = build_entry_line(
-                iv.get("name", ""),
-                resource.url,
-                iv.get("description", ""),
-                iv.get("type", ""),
-                list(iv.get("platforms", [])),
-            )
-        except ValueError as exc:
-            await self._log("entry_build_failed", user_id, resource.id, detail=str(exc))
-            iv = {k: v for k, v in iv.items() if k == "platforms"}
-            await set_resource_state(
-                self.deps.conn, resource.id, "AWAITING_ENTRY_INFO", entry_line=_dump_iv(iv)
-            )
-            _transition(resource.id, resource.state, "AWAITING_ENTRY_INFO")
-            return await self._advance(user_id, resource.id)
-        await set_resource_state(self.deps.conn, resource.id, "CONFIRMING", entry_line=line)
-        _transition(resource.id, resource.state, "CONFIRMING")
-        await self._log("entry_preview", user_id, resource.id, detail=f"folder={resource.folder}")
-        return FlowResult((f"{PREVIEW}\n{line}",), keyboard=ConfirmKB(resource.folder))
 
-    def _entry_parts(
-        self, resource: Any
-    ) -> tuple[Any, str, list[str]] | None:
-        """Rebuild pieces of the stored bullet: parsed fields + type/tags.
 
-        ``parse_entry_line`` stays as internal plumbing: it reads the
-        current description and tags back out of the canonical ``entry_line``.
-        LEGACY cost words inside the tag run are dropped here, so any rebuild
-        emits a cost-free bullet. Returns None when the stored line
-        cannot support an edit loop (a hand-corrupted row, never a
-        builder-produced one)."""
-        try:
-            parsed = parse_entry_line(resource.entry_line)
-        except EntryLineError:
-            return None
-        head = parsed.tags[0] if parsed.tags else ""
-        kind, sep, type_tag = head.partition(":")
-        if not sep or kind != "type" or type_tag not in ENTRY_TYPES:
-            return None
-        platform_tags = [t for t in parsed.tags[1:] if t not in LEGACY_COST_TAGS]
-        return parsed, type_tag, platform_tags
 
-    @staticmethod
-    def _edit_prompt(mode: str, parsed: Any) -> tuple[str, str]:
-        """Instruction + copyable code block of the CURRENT field value."""
-        if mode == pending_edits.TAGS:
-            rendered = " ".join(f"`{tag}`" for tag in parsed.tags)
-            return (EDIT_TAGS_ASK, _code_block(rendered))
-        return (EDIT_DESC_ASK, _code_block(parsed.description))
 
-    async def _start_field_edit(
-        self,
-        user_id: int,
-        resource: Any,
-        mode: str,
-        chat_id: int | None,
-        message_id: int | None,
-    ) -> FlowResult:
-        """Answer a "d"/"t" press as NEW messages and arm the paste-back."""
-        parts = self._entry_parts(resource)
-        if parts is None:
-            await self._log(
-                "entry_edit_rejected", user_id, resource.id, detail="reason=unrebuildable-entry"
-            )
-            return FlowResult((EDIT_UNAVAILABLE,), new_message=True, parse_mode=PARSE_HTML)
-        parsed = parts[0]
-        pending_edits.set_marker(resource.id, mode, chat_id, message_id)
-        await self._log("entry_edit_requested", user_id, resource.id, detail=f"field={mode}")
-        return FlowResult(
-            self._edit_prompt(mode, parsed), new_message=True, parse_mode=PARSE_HTML
-        )
 
-    def _rebuild_from_description(
-        self, resource: Any, parsed: Any, type_tag: str, platform_tags: list[str], text: str
-    ) -> tuple[str | None, str | None]:
-        """The pasted line is a DESCRIPTION only (interview guard reused)."""
-        stripped = (text or "").strip()
-        if "\n" in stripped or "\r" in stripped:
-            return None, EDIT_DESC_ONE_LINE
-        value = sanitize_line(stripped, _DESC_MAX + 1)
-        if not value:
-            return None, EDIT_DESC_EMPTY
-        if any(ch in value for ch in ("[", "]", "`")):
-            return None, INVALID_FIELD.format(label="Description")
-        if len(value) > _DESC_MAX:
-            return None, EDIT_DESC_TOO_LONG
-        try:
-            new_line = build_entry_line(
-                parsed.name, resource.url, value, type_tag, platform_tags
-            )
-        except ValueError as exc:
-            return None, _html_escape(sanitize_line(str(exc), EDIT_RETRY_DETAIL_MAX))
-        return new_line, None
 
-    def _rebuild_from_tags(
-        self, resource: Any, parsed: Any, text: str
-    ) -> tuple[str | None, str | None]:
-        """Whitespace tokens; backticks optional; existing tag rules via build."""
-        tokens = (text or "").replace("`", " ").split()
-        if not tokens:
-            return None, EDIT_NO_TYPE_TAG
-        kind, sep, type_tag = tokens[0].partition(":")
-        if not sep or kind != "type":
-            return None, EDIT_NO_TYPE_TAG
-        if type_tag not in ENTRY_TYPES:
-            return None, EDIT_TYPE_VALUE
-        rest = tokens[1:]
-        if any(":" in tag for tag in rest):
-            return None, EDIT_TAGS_COLON
-        try:
-            new_line = build_entry_line(
-                parsed.name, resource.url, parsed.description, type_tag, rest
-            )
-        except ValueError as exc:
-            return None, _html_escape(sanitize_line(str(exc), EDIT_RETRY_DETAIL_MAX))
-        return new_line, None
-
-    async def _handle_confirming_text(self, user_id: int, resource: Any, text: str) -> FlowResult:
-        """The pending-edit paste pipeline.
-
-        CONFIRMING text edits anything only while a "d"/"t" marker is set —
-        without one it falls back to ``CONFIRMING_HINT``. The paste rebuilds the bullet
-        through ``build_entry_line`` (caps stay single-sourced), keeping every
-        field the pressed button does not edit, persists it, re-sends exactly
-        the confirmation ``_build_preview`` produces and hands the previous
-        card's tracked ids to the renderer for best-effort deletion. One
-        rejection answers one user-safe error plus the re-offered prompt;
-        state, bullet and the ✅/❌ bubble stay untouched."""
-        marker = pending_edits.get_marker(resource.id)
-        if marker is None:
-            return FlowResult((CONFIRMING_HINT,))
-        parts = self._entry_parts(resource)
-        if parts is None:
-            pending_edits.clear_marker(resource.id)
-            await self._log(
-                "entry_edit_rejected", user_id, resource.id, detail="reason=unrebuildable-entry"
-            )
-            return FlowResult((EDIT_UNAVAILABLE,), parse_mode=PARSE_HTML)
-        parsed, type_tag, platform_tags = parts
-        if marker.mode == pending_edits.TAGS:
-            new_line, error = self._rebuild_from_tags(resource, parsed, text)
-        else:
-            new_line, error = self._rebuild_from_description(
-                resource, parsed, type_tag, platform_tags, text
-            )
-        if error is not None:
-            await self._log(
-                "entry_edit_rejected", user_id, resource.id, detail=f"field={marker.mode}"
-            )
-            return FlowResult(
-                (error, *self._edit_prompt(marker.mode, parsed)), parse_mode=PARSE_HTML
-            )
-
-        await set_resource_state(
-            self.deps.conn, resource.id, "CONFIRMING", entry_line=new_line
-        )
-        await self._log(
-            "entry_edited", user_id, resource.id,
-            detail=f"field={marker.mode}; folder={resource.folder}",
-        )
-        pending_edits.clear_marker(resource.id)
-        deletes: tuple[tuple[int, int], ...] = ()
-        if marker.chat_id is not None and marker.message_id is not None:
-            deletes = ((marker.chat_id, marker.message_id),)
-        return FlowResult(
-            (f"{PREVIEW}\n{new_line}",),
-            keyboard=ConfirmKB(resource.folder),
-            delete_outgoing=deletes,
-        )
-
-    async def handle_confirm(self, user_id: int) -> FlowResult:
-        resource = await self._active(user_id)
-        if resource is None:
-            return FlowResult((NOTHING_PENDING,))
-        pending_edits.clear_marker(resource.id)
-        if resource.state != "CONFIRMING":
-            return FlowResult((CONFIRMING_HINT,))
-        stored = await get_github_token(self.deps.conn, user_id)
-        if stored is None:
-            await self._log("confirm_missing_pat", user_id, resource.id)
-            return FlowResult((NEED_TOKEN_FOR_LINK,))
-        try:
-            token = decrypt_pat(self.deps.settings, stored.enc_token)
-        except ValueError:
-            await self._log("pat_invalid", user_id, resource.id)
-            return FlowResult((DECRYPT_FAILED,))
-
-        try:
-            path = self.deps.settings.readme_path(resource.folder)
-        except ValueError:
-            await self._log(
-                "commit_rejected",
-                user_id,
-                resource.id,
-                detail=f"folder={sanitize_line(str(resource.folder or ''))}",
-            )
-            return FlowResult((COMMIT_REJECTED,))
-        client = self.deps.make_github(token)
-        try:
-            commit_url, status = await client.commit_entry(
-                path,
-                resource.entry_line,
-                self.deps.settings.target_branch,
-                leaf_title_from_path(path),
-                _first_paragraph(resource.context),
-            )
-        except DuplicateError as exc:
-            logger.warning("commit_duplicate res=%s: %s", resource.id, str(exc))
-            await self._log("commit_duplicate", user_id, resource.id, detail=str(exc))
-            return FlowResult((str(exc),))
-        except FetchError as exc:
-            logger.warning("commit_failed res=%s: %s", resource.id, str(exc))
-            await self._log("commit_failed", user_id, resource.id, detail=str(exc))
-            return FlowResult((str(exc) + COMMIT_PUBLIC_REMINDER,))
-        await set_resource_state(self.deps.conn, resource.id, "COMMITTED", commit_url=commit_url)
-        _transition(resource.id, resource.state, "COMMITTED")
-        await upsert_mirror_link(
-            self.deps.conn, canonical_url_key(resource.url), resource.url, resource.folder
-        )
-        logger.info("milestone=commit_done res=%s url=%s", resource.id, commit_url)
-        await self._log("committed", user_id, resource.id, detail=commit_url)
-        return FlowResult(
-            (
-                COMMITTED_REPLY.format(status=status, url=commit_url),
-                f"Everything is on file in the audit trail (resource #{resource.id}).",
-            )
-        )
 
     async def handle_cancel(self, user_id: int) -> FlowResult:
         resource = await self._active(user_id)
@@ -1325,58 +900,8 @@ class ResourceFlow:
         await self._log("pat_forgotten", user_id)
         return FlowResult((FORGOTTEN,))
 
-    async def handle_stats(self, user_id: int, username: str | None) -> FlowResult:
-        """Two read-only boards, one message each: committed links and top tags.
 
-        Plain text (no parse mode) — usernames and tags arrive untrusted, and
-        the bot-wide default of none keeps them inert.
-        """
-        await self._touch(user_id, username)
-        await self._log("stats", user_id)
-        rows = await get_upload_leaderboard(self.deps.conn)
-        committed = await list_resources_by_states(self.deps.conn, ("COMMITTED",))
-        return FlowResult((self._links_board(rows, user_id), self._tags_board(committed)))
 
-    @staticmethod
-    def _links_board(rows: list[Any], user_id: int) -> str:
-        if not rows:
-            return STATS_EMPTY
-        lines = ["🏆 Committed links — per curator"]
-        for rank, row in enumerate(rows[:_STATS_DISPLAY_LIMIT], start=1):
-            name = f"@{row.username}" if row.username else "(no username)"
-            lines.append(f"{_medal(rank)} {name} — {_links_noun(row.total)}")
-        my_row = next((r for r in rows if r.tg_user_id == user_id), None)
-        if my_row is None:
-            lines.append(STATS_NO_COMMITS)
-        elif len(rows) > _STATS_DISPLAY_LIMIT:
-            rank = next(i for i, r in enumerate(rows, start=1) if r.tg_user_id == user_id)
-            lines.append(f"You are #{rank} — {_links_noun(my_row.total)}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _tags_board(committed: list[Any]) -> str:
-        """Tag counts across COMMITTED entries, reusing the bullet parser.
-
-        Tags are casefolded (one row per tag however it was spelled); ties
-        break alphabetically so the order is stable. A tampered entry_line is
-        skipped, never counted.
-        """
-        counts: dict[str, int] = {}
-        for resource in committed:
-            try:
-                parsed = parse_entry_line(resource.entry_line)
-            except EntryLineError:
-                continue
-            for tag in parsed.tags:
-                key = tag.casefold()
-                counts[key] = counts.get(key, 0) + 1
-        if not counts:
-            return STATS_TAGS_EMPTY
-        lines = ["🏷️ Top tags — across committed links"]
-        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        for rank, (tag, n) in enumerate(ranked[:_STATS_DISPLAY_LIMIT], start=1):
-            lines.append(f"{_medal(rank)} {tag} — {_links_noun(n)}")
-        return "\n".join(lines)
 
     async def handle_unauthorized(self, user_id: int | None, username: str | None) -> FlowResult:
         """Silent to the chat. The only user-facing effect is none; an audit
