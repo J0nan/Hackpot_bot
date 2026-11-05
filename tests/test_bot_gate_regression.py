@@ -12,15 +12,21 @@ from pathlib import Path
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
 
 from app.bot import handlers, pending_edits, rearm
-from app.bot.flow import (ASK_PLATFORMS, INVALID_FIELD, UNKNOWN_FOLDER,
-                          AppDeps, ResourceFlow, make_github_factory)
+from app.bot.flow import ASK_PLATFORMS, INVALID_FIELD, UNKNOWN_FOLDER, AppDeps, ResourceFlow, make_github_factory
 from app.config import Settings
 from app.db.database import open_db
-from app.db.repository import (create_resource, get_active_resource_for_user,
-                               get_github_token, get_resource, save_github_token,
-                               set_resource_state, upsert_user)
+from app.db.repository import (
+    create_resource,
+    get_active_resource_for_user,
+    get_github_token,
+    get_resource,
+    save_github_token,
+    set_resource_state,
+    upsert_user,
+)
 from app.security.rate_limit import RateLimiter
 from app.security.token_store import decrypt_pat, encrypt_pat
 
@@ -67,7 +73,6 @@ def _no_http(request):
 
 @pytest.fixture
 async def env(tmp_path, monkeypatch):
-    from cryptography.fernet import Fernet
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:TEST")
     monkeypatch.setenv("AUTHORIZED_USERS", str(UID))
     monkeypatch.setenv("CATEGORIES_JSON", json.dumps(CATEGORIES))

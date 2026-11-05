@@ -25,7 +25,6 @@ from app.security.token_store import (
     validate_pat_format,
 )
 
-
 ALLOWED_IDS = (123456789, 987654321)
 CATEGORIES = {
     "01_Recon/OSINT": "reconnaissance and OSINT tooling",

@@ -29,6 +29,7 @@ from app.services.repo_mirror import (
     MirrorSyncError,
     extract_readme_links,
     mirror_sync_loop,
+    parse_tree_response,
     sync_mirror_once,
 )
 
@@ -240,8 +241,6 @@ async def test_tree_failure_raises_and_leaves_mirror_intact(db: aiosqlite.Connec
 
 
 async def test_truncated_tree_is_refused(db: aiosqlite.Connection) -> None:
-    from app.services.repo_mirror import parse_tree_response
-
     with pytest.raises(MirrorSyncError):
         parse_tree_response({"sha": "s", "tree": [{"path": "x"}], "truncated": True})
 

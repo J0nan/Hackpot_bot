@@ -121,7 +121,8 @@ def build_request(
 ) -> dict[str, Any]:
     """Build the System One request body.
 
-    ``categories`` is the leaf-path -> criteria map from ``CATEGORIES_JSON``; its keys are exactly the folders the model may answer with."""
+    ``categories`` is the leaf-path -> criteria map from ``CATEGORIES_JSON``;
+    its keys are exactly the folders the model may answer with."""
     if not model or not model.strip():
         raise ValueError("model must be a non-empty string")
     if not categories:
@@ -347,8 +348,6 @@ class DecisionClient:
                     )
                 )
             return data
-
-        raise DecisionError(self._safe(f"decision request failed: {last_failure}"))
 
     async def classify(
         self,

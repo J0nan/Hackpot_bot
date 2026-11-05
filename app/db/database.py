@@ -77,7 +77,6 @@ CREATE TABLE IF NOT EXISTS decisions (
     confidence         REAL NOT NULL DEFAULT 0,
     probabilities_json TEXT NOT NULL DEFAULT '{}',
     needs_admin        REAL,
-    cost_choice        TEXT NOT NULL DEFAULT '',
     raw_json           TEXT NOT NULL DEFAULT '{}',
     created_at         TEXT NOT NULL
 );

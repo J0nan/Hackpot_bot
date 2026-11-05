@@ -35,11 +35,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 from urllib.parse import quote
-
-import httpx
 
 from app.db.repository import (
     delete_mirror_file,
@@ -50,8 +47,8 @@ from app.db.repository import (
     set_mirror_state,
 )
 from app.logging_config import get_logger
-from app.services.category_sync import API_ROOT, RAW_ROOT
 from app.services.github import canonical_url_key
+from app.services.github_http import RAW_ROOT, GitHubHttpError, get_many, get_raw, get_tree
 
 logger = get_logger(__name__)
 
@@ -133,38 +130,16 @@ def parse_tree_response(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]]
 
 def fetch_tree_with_sha(repo: str, branch: str, token: str | None) -> tuple[str, list[dict[str, Any]]]:
     """One recursive git/trees call → (tree sha, entries). Raises MirrorSyncError."""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": USER_AGENT,
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    url = f"{API_ROOT}/repos/{repo}/git/trees/{quote(branch, safe='')}"
     try:
-        resp = httpx.get(url, headers=headers, params={"recursive": "1"},
-                         timeout=30.0, follow_redirects=True)
-    except httpx.HTTPError as exc:
-        raise MirrorSyncError(f"GitHub tree request failed: {exc}") from exc
-    if resp.status_code != 200:
-        raise MirrorSyncError(f"GitHub tree call returned HTTP {resp.status_code}")
-    try:
-        data = resp.json()
-    except ValueError as exc:
-        raise MirrorSyncError("GitHub tree response was not JSON") from exc
+        data = get_tree(repo, branch, token, user_agent=USER_AGENT)
+    except GitHubHttpError as exc:
+        raise MirrorSyncError(str(exc)) from exc
     return parse_tree_response(data)
 
 
 def fetch_raw_text(url: str, token: str | None) -> str | None:
     """Fetch one raw file; None on any transport failure or non-200."""
-    headers = {"User-Agent": USER_AGENT}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    try:
-        resp = httpx.get(url, headers=headers, timeout=30.0, follow_redirects=True)
-    except httpx.HTTPError:
-        return None
-    return resp.text if resp.status_code == 200 else None
+    return get_raw(url, token, user_agent=USER_AGENT)
 
 
 def _fetch_batch(
@@ -172,10 +147,7 @@ def _fetch_batch(
     workers: int = _FETCH_WORKERS,
 ) -> dict[str, str | None]:
     """Fetch all urls in threads (sync httpx, off the event loop by the caller)."""
-    if not urls:
-        return {}
-    with ThreadPoolExecutor(max_workers=min(workers, len(urls))) as pool:
-        return dict(zip(urls, pool.map(lambda u: fetch_raw(u, token), urls)))
+    return get_many(urls, token, fetch_raw, workers=workers)
 
 
 MirrorResult = dict[str, Any]

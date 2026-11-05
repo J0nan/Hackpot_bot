@@ -112,7 +112,6 @@ class Decision:
     confidence: float
     probabilities_json: str
     needs_admin: float | None
-    cost_choice: str
     raw_json: str
     created_at: str
 
@@ -126,7 +125,6 @@ class Decision:
             confidence=row["confidence"],
             probabilities_json=row["probabilities_json"],
             needs_admin=row["needs_admin"],
-            cost_choice=row["cost_choice"],
             raw_json=row["raw_json"],
             created_at=row["created_at"],
         )

@@ -274,7 +274,6 @@ async def test_record_decision_json_roundtrip(db: aiosqlite.Connection) -> None:
         confidence=0.62,
         probabilities=probabilities,
         needs_admin=0.02,
-        cost_choice="free",
         raw_json=raw,
     )
     assert isinstance(decision_id, int) and decision_id > 0
@@ -287,7 +286,6 @@ async def test_record_decision_json_roundtrip(db: aiosqlite.Connection) -> None:
     assert decision.folder_choice == "01_Recon/Passive"
     assert decision.confidence == 0.62
     assert decision.needs_admin == 0.02
-    assert decision.cost_choice == "free"
     assert json.loads(decision.probabilities_json) == probabilities
     assert json.loads(decision.raw_json) == raw
     assert decision.created_at.endswith("Z")

@@ -145,7 +145,7 @@ class TestApplyRefresh:
         settings = make_settings()
         cs.apply_refresh(settings, env_file=env)
         text = env.read_text(encoding="utf-8")
-        line = next(l for l in text.splitlines() if l.startswith("CATEGORIES_JSON="))
+        line = next(candidate for candidate in text.splitlines() if candidate.startswith("CATEGORIES_JSON="))
         assert json.loads(line.split("=", 1)[1]) == {p: "fresh" for p in LEAVES}
         assert "# keep me" in text and "TARGET_REPO=HackPot-HQ/Hackpot" in text
         backup = tmp_path / ".env.bak"
@@ -293,8 +293,8 @@ class TestScriptCliUnchanged:
         assert f"Fetching {REPO}@{BRANCH} tree from GitHub ..." in out
         assert "Fetching 2 leaf README description(s) from raw.githubusercontent ..." in out
         assert "  2 README intro(s) found." in out
-        line = next(l for l in env.read_text(encoding="utf-8").splitlines()
-                    if l.startswith("CATEGORIES_JSON="))
+        line = next(candidate for candidate in env.read_text(encoding="utf-8").splitlines()
+                    if candidate.startswith("CATEGORIES_JSON="))
         assert json.loads(line.split("=", 1)[1]) == {p: "readme text" for p in LEAVES}
         assert list(tmp_path.glob(".env.bak.*"))
 

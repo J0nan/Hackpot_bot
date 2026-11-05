@@ -31,7 +31,6 @@ DECISION_COLUMNS: frozenset[str] = frozenset(
         "confidence",
         "probabilities_json",
         "needs_admin",
-        "cost_choice",
         "raw_json",
     }
 )

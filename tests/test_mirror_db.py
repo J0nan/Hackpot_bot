@@ -9,6 +9,7 @@ the other listing. Real aiosqlite under tmp_path; no network, no live data."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
@@ -168,8 +169,6 @@ async def test_mirror_state_timestamp_matches_utc_now_shape(
     db: aiosqlite.Connection,
 ) -> None:
     """The synced_at value uses the package's single timestamp source (ISO-8601 with Z)."""
-    from datetime import datetime
-
     await set_mirror_state(db, "head-1")
     state = await get_mirror_state(db)
     assert state is not None

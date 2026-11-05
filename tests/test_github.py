@@ -12,8 +12,8 @@ import httpx
 import pytest
 
 from app.services.github import (
-    LEGACY_COST_TAGS,
     ENTRY_TYPES,
+    LEGACY_COST_TAGS,
     ConflictError,
     DuplicateError,
     EntryLineError,

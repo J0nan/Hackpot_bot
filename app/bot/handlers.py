@@ -11,14 +11,17 @@ arrive via Dispatcher workflow kwargs (see app/main.py)."""
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from app.bot import keyboards
-from app.db.repository import audit
 from app.bot.flow import (
+    SLOW_DOWN,
     AppDeps,
     CandidatesKB,
     ConfirmKB,
@@ -27,9 +30,9 @@ from app.bot.flow import (
     ManualKB,
     ResourceFlow,
     ResumeKB,
-    SLOW_DOWN,
     TypeKB,
 )
+from app.db.repository import audit
 from app.security.authz import is_authorized
 
 router = Router()
@@ -88,21 +91,31 @@ async def _send(message: Message, deps: AppDeps, result: FlowResult) -> None:
             pass
 
 
+async def _gate(
+    deps: AppDeps,
+    flow: ResourceFlow,
+    user_id: int | None,
+    username: str,
+    reply: Callable[[str], Awaitable[Any]],
+) -> str:
+    """Run the safety chain and perform its side effects. Returns the verdict."""
+    verdict = precheck(deps, user_id)
+    if verdict == "unauthorized":
+        await flow.handle_unauthorized(user_id, username)
+    elif verdict == "rate_limited":
+        await reply(SLOW_DOWN)
+        await audit(deps.conn, "rate_limited", tg_user_id=user_id)
+    return verdict
+
+
 async def _guard_message(
     message: Message, deps: AppDeps, flow: ResourceFlow
 ) -> tuple[bool, int | None, str]:
     """Returns (proceed, user_id, username). Side effects for blocked cases."""
     user_id = message.from_user.id if message.from_user else None
     username = (message.from_user.username or "") if message.from_user else ""
-    verdict = precheck(deps, user_id)
-    if verdict == "unauthorized":
-        await flow.handle_unauthorized(user_id, username)
-        return False, user_id, username
-    if verdict == "rate_limited":
-        await message.answer(SLOW_DOWN)
-        await audit(deps.conn, "rate_limited", tg_user_id=user_id)
-        return False, user_id, username
-    return True, user_id, username
+    verdict = await _gate(deps, flow, user_id, username, message.answer)
+    return verdict == "ok", user_id, username
 
 
 @router.message(CommandStart())
@@ -163,14 +176,11 @@ async def on_text(message: Message, deps: AppDeps, flow: ResourceFlow) -> None:
 async def on_callback(callback: CallbackQuery, deps: AppDeps, flow: ResourceFlow) -> None:
     user_id = callback.from_user.id if callback.from_user else None
     username = (callback.from_user.username or "") if callback.from_user else ""
-    verdict = precheck(deps, user_id)
+    verdict = await _gate(deps, flow, user_id, username, callback.answer)
     if verdict == "unauthorized":
-        await flow.handle_unauthorized(user_id, username)
         await callback.answer()
         return
     if verdict == "rate_limited":
-        await callback.answer(SLOW_DOWN)
-        await audit(deps.conn, "rate_limited", tg_user_id=user_id)
         return
 
     card = callback.message

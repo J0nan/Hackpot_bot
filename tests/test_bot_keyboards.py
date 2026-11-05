@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from app.bot import folder_picker
+from app.bot import folder_picker, keyboards
 from app.bot.keyboards import (
     HELP_TEXT,
     candidates_kb,
@@ -302,9 +302,7 @@ def test_type_kb_lists_allowed_types_only_as_direct_callbacks() -> None:
 
 def test_cost_keyboard_is_gone() -> None:
     """The cost keyboard no longer exists anywhere."""
-    import app.bot.keyboards as keyboards_module
-
-    assert not hasattr(keyboards_module, "cost_kb")
+    assert not hasattr(keyboards, "cost_kb")
 
 
 def test_confirm_kb_labels_destination_folder() -> None:

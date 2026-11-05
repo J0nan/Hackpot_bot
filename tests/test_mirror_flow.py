@@ -21,8 +21,8 @@ from app.bot import pending_edits, rearm
 from app.bot.flow import (
     ALREADY_COMMITTED,
     ALREADY_COMMITTED_OUTSIDE,
-    AppDeps,
     STATS_EMPTY,
+    AppDeps,
     ResourceFlow,
 )
 from app.config import Settings

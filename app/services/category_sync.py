@@ -28,21 +28,17 @@ import asyncio
 import json
 import re
 import shutil
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote
 
-import httpx
-
 from app.config import LEAF_PATH_RE, MAX_CATEGORIES
 from app.logging_config import get_logger
+from app.services.github_http import RAW_ROOT, GitHubHttpError, get_many, get_raw, get_tree
 
 logger = get_logger(__name__)
 
-API_ROOT = "https://api.github.com"
-RAW_ROOT = "https://raw.githubusercontent.com"
 PREFIX = "CATEGORIES_JSON="
 
 _PLACEHOLDER = "Tools and resources related to {sub} ({domain}) — refine this description."
@@ -207,51 +203,38 @@ def fetch_readme_descriptions(
     """
     if not leaves:
         return {}
-    headers = {"User-Agent": "hackpot-bot-sync-categories"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    urls = {leaf: readme_raw_url(repo, branch, leaf) for leaf in leaves}
+    texts = get_many(
+        list(urls.values()),
+        token,
+        lambda url, tok: get_raw(url, tok, user_agent="hackpot-bot-sync-categories"),
+        workers=workers,
+    )
     out: dict[str, str] = {}
-
-    def one(leaf: str) -> tuple[str, str]:
-        try:
-            resp = httpx.get(readme_raw_url(repo, branch, leaf), headers=headers,
-                             timeout=30.0, follow_redirects=True)
-        except httpx.HTTPError:
-            return leaf, ""
-        if resp.status_code != 200:
-            return leaf, ""
-        return leaf, extract_readme_description(resp.text)
-
-    with ThreadPoolExecutor(max_workers=min(workers, len(leaves))) as pool:
-        for leaf, description in pool.map(one, leaves):
-            if description:
-                out[leaf] = description
+    for leaf, url in urls.items():
+        text = texts.get(url)
+        if not text:
+            continue
+        description = extract_readme_description(text)
+        if description:
+            out[leaf] = description
     return out
 
 
 def fetch_tree(repo: str, branch: str, token: str | None) -> list[dict[str, Any]]:
     """One recursive git/trees call; raises SystemExit with a safe message."""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "hackpot-bot-sync-categories",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    url = f"{API_ROOT}/repos/{repo}/git/trees/{quote(branch, safe='')}"
     try:
-        resp = httpx.get(url, headers=headers, params={"recursive": "1"}, timeout=30.0, follow_redirects=True)
-    except httpx.HTTPError as exc:
-        raise SystemExit(f"GitHub request failed: {exc}") from exc
-    if resp.status_code in (403, 429) and not token:
-        raise SystemExit(
-            "GitHub rate limit hit (60 req/h unauthenticated) — set GITHUB_TOKEN and retry."
-        )
-    if resp.status_code == 404:
-        raise SystemExit(f"not found (404): repo {repo!r} or branch {branch!r}")
-    if resp.status_code != 200:
-        raise SystemExit(f"GitHub returned HTTP {resp.status_code}: {resp.text[:200]}")
-    data = resp.json()
+        data = get_tree(repo, branch, token, user_agent="hackpot-bot-sync-categories")
+    except GitHubHttpError as exc:
+        if exc.status in (403, 429) and not token:
+            raise SystemExit(
+                "GitHub rate limit hit (60 req/h unauthenticated) — set GITHUB_TOKEN and retry."
+            ) from exc
+        if exc.status == 404:
+            raise SystemExit(f"not found (404): repo {repo!r} or branch {branch!r}") from exc
+        if exc.status is not None:
+            raise SystemExit(f"GitHub returned HTTP {exc.status}: {exc.body[:200]}") from exc
+        raise SystemExit(str(exc)) from exc
     if data.get("truncated"):
         raise SystemExit("GitHub truncated the tree (>100k entries) — cannot trust the leaf list")
     return data.get("tree", [])

@@ -37,23 +37,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.services.category_sync import (  # noqa: E402
-    API_ROOT,
     PREFIX,
-    RAW_ROOT,
-    extract_leaf_paths,
-    extract_readme_description,
-    fetch_readme_descriptions,
-    fetch_tree,
-    humanize,
     is_placeholder,
-    merge_categories,
     parse_env,
-    placeholder_criteria,
-    readme_raw_url,
     replace_in_env,
     sync_once,
     utc_stamp,
-    validate,
 )
 
 
@@ -138,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     new_text = replace_in_env(env_text, categories)
     if args.dry_run:
         print("--dry-run: .env not modified. New line preview:")
-        line = next(l for l in new_text.splitlines() if l.startswith(PREFIX))
+        line = next(candidate for candidate in new_text.splitlines() if candidate.startswith(PREFIX))
         print(line[:160] + ("..." if len(line) > 160 else ""))
         return 0
 

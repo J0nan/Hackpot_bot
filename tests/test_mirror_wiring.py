@@ -16,6 +16,7 @@ import pytest
 from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
+import app.main as m
 from app.config import Settings
 
 USER = 100
@@ -76,8 +77,6 @@ class _DummyDispatcher:
 
 @pytest.fixture()
 def wired(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
-    import app.main as m
-
     monkeypatch.setattr(m, "Bot", _DummyBot)
     dispatched: list[_DummyDispatcher] = []
 
