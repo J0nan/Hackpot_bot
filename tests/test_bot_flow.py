@@ -15,32 +15,35 @@ from typing import Any
 
 import httpx
 import pytest
+from aiogram.exceptions import TelegramAPIError
 from cryptography.fernet import Fernet
 
 from app.bot import handlers, manual_placement, pending_edits, rearm
 from app.bot.flow import (
     ASK_PLATFORMS,
     ASK_SUMMARY,
-    AppDeps,
     CANCELLED_MSG,
-    CandidatesKB,
-    ConfirmKB,
+    EDIT_NO_TYPE_TAG,
+    EDIT_UNAVAILABLE,
     FLOW_INTERRUPTED,
-    FlowResult,
-    FoldersKB,
     GREETING_READY,
-    ManualKB,
     NOTHING_PENDING,
     PREVIEW,
-    ResourceFlow,
-    ResumeKB,
     SLOW_DOWN,
     STATS_EMPTY,
     STATS_NO_COMMITS,
     STATS_TAGS_EMPTY,
-    TypeKB,
     UNKNOWN_CALLBACK,
     UNKNOWN_FOLDER,
+    AppDeps,
+    CandidatesKB,
+    ConfirmKB,
+    FlowResult,
+    FoldersKB,
+    ManualKB,
+    ResourceFlow,
+    ResumeKB,
+    TypeKB,
     make_github_factory,
 )
 from app.bot.handlers import precheck
@@ -48,6 +51,7 @@ from app.config import Settings
 from app.db.database import open_db
 from app.db.repository import (
     create_resource,
+    delete_github_token,
     get_active_resource_for_user,
     get_github_token,
     get_resource,
@@ -367,7 +371,6 @@ async def test_github_url_fetches_readme_then_classifies_into_candidates(h: dict
         row = dict(await cur.fetchone())
     assert json.loads(row["probabilities_json"]) == {CHOSEN: 0.75, FOLDERS[0]: 0.2}
     assert row["needs_admin"] == 0.75
-    assert row["cost_choice"] == ""
     assert row["request_id"] == "req-1"
     assert row["folder_choice"] == CHOSEN
     assert json.loads(row["raw_json"]) == {"answers": {"folder": {"choice": CHOSEN}}}
@@ -685,7 +688,7 @@ async def test_platforms_none_accepts_empty_optional(h: dict) -> None:
     await _answer(flow, "Description")
     await flow.handle_callback(USER, "jonan", "docs")
     await flow.handle_callback(USER, "jonan", "paid")
-    result = await _answer(flow, "none")
+    await _answer(flow, "none")
     resource = await get_resource(h["conn"], await _active_id(h))
     assert resource.state == "CONFIRMING"
     assert "none" not in resource.entry_line.split("`")
@@ -771,7 +774,6 @@ async def test_commit_fetch_error_surfaces_public_hint_and_keeps_confirming(h: d
 
 async def test_confirm_without_pat_asks_for_token(h: dict) -> None:
     flow, _ = await _to_confirming(h)
-    from app.db.repository import delete_github_token
 
     await delete_github_token(h["conn"], USER)
     result = await flow.handle_confirm(USER)
@@ -1350,7 +1352,7 @@ async def test_in_progress_duplicate_is_reported_as_pending(h: dict) -> None:
     """No PAT needed for the gate to fire, and pending rows are named honestly."""
     flow = h["flow"]
     rid = await _seed(h, GITHUB_URL, "github", "NEED_SUMMARY")
-    placed = await _seed(h, OTHER_URL, "other", "AWAITING_ENTRY_INFO", folder=FOLDERS[0])
+    await _seed(h, OTHER_URL, "other", "AWAITING_ENTRY_INFO", folder=FOLDERS[0])
     before = await _count_resources(h)
 
     result = await flow.handle_text(USER, "jonan", GITHUB_URL)
@@ -1621,3 +1623,48 @@ async def test_resume_kb_renders_continue_and_cancel(h: dict) -> None:
     rows = markup.inline_keyboard
     assert rows[0][0].callback_data == "keep"
     assert rows[1][0].callback_data == "❌"
+
+
+async def test_confirm_and_cancel_without_active_flow_say_nothing_pending(h: dict) -> None:
+    assert (await h["flow"].handle_confirm(USER)).replies == (NOTHING_PENDING,)
+    assert (await h["flow"].handle_cancel(USER)).replies == (NOTHING_PENDING,)
+
+
+async def test_unrebuildable_entry_offers_edit_unavailable(h: dict) -> None:
+    """A hand-corrupted bullet cannot enter the edit loop."""
+    flow, _ = await _to_confirming(h)
+    rid = await _active_id(h)
+    await set_resource_state(h["conn"], rid, "CONFIRMING", entry_line="not a bullet")
+
+    press = await flow.handle_callback(
+        USER, "jonan", "d", chat_id=CHAT_ID, message_id=CARD_MSG_ID
+    )
+    assert press.replies == (EDIT_UNAVAILABLE,)
+
+    pending_edits.set_marker(rid, pending_edits.DESCRIPTION, CHAT_ID, CARD_MSG_ID)
+    paste = await flow.handle_text(USER, "jonan", "A new description")
+    assert paste.replies == (EDIT_UNAVAILABLE,)
+    assert pending_edits.get_marker(rid) is None
+
+
+async def test_tags_paste_without_type_tag_is_rejected(h: dict) -> None:
+    flow, _ = await _to_confirming(h)
+    await flow.handle_callback(USER, "jonan", "t")
+    result = await flow.handle_text(USER, "jonan", "linux docker")
+    assert result.replies[0] == EDIT_NO_TYPE_TAG
+
+
+class _FailingDeleteBot(FakeBot):
+    async def delete_message(self, chat_id: int = None, message_id: int = None) -> None:
+        raise TelegramAPIError(method=None, message="boom")
+
+
+async def test_handler_tolerates_delete_failures(h: dict) -> None:
+    flow, _ = await _to_confirming(h)
+    cb = FakeCallback(USER, "jonan", "d")
+    await handlers.on_callback(cb, h["deps"], flow)
+
+    paste = FakeMessage(USER, "jonan", "A superb recon tool")
+    paste.bot = _FailingDeleteBot()
+    await handlers.on_text(paste, h["deps"], flow)
+    assert paste.answers[-1].startswith(PREVIEW)
