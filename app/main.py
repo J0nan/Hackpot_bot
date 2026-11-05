@@ -1,12 +1,11 @@
-"""Entrypoint (T6; Specs S10, S11).
+"""Entrypoint.
 
 Wires the seams: fail-fast Settings, the SQLite bootstrap, one shared
 httpx client (30 s timeouts per the Security section), the rate limiter, and
 the aiogram dispatcher with the bot Router. Both polling and this module do
 no network at construction time; on shutdown the shared httpx client and the
-database connection are always closed (L7-6) — the Bot session is closed by
-``start_polling(close_bot_session=True)``.
-"""
+database connection are always closed — the Bot session is closed by
+``start_polling(close_bot_session=True)``."""
 
 from __future__ import annotations
 
@@ -32,9 +31,7 @@ logger = get_logger(__name__)
 
 
 async def main() -> None:
-    settings = Settings()  # fail-fast: invalid env stops before any I/O
-    # Configure logging first (S2/S4): the bot token and Qwen key are handed to
-    # the redaction filter so no credential can ever reach the stream.
+    settings = Settings()
     secrets = (
         settings.telegram_bot_token.get_secret_value(),
         settings.qwen_api_key.get_secret_value(),
@@ -61,13 +58,8 @@ async def main() -> None:
         bot = Bot(token=settings.telegram_bot_token.get_secret_value())
         dp = Dispatcher(storage=MemoryStorage(), deps=deps, flow=flow)
         dp.include_router(router)
-        # Daily category refresh: syncs once at startup, then wakes at
-        # CATEGORY_SYNC_TIME and hot-swaps settings.categories. No network at
-        # construction time (the first fetch runs inside the task).
         if settings.category_sync_enabled:
             sync_task = asyncio.create_task(category_refresh_loop(settings))
-        # Repo mirror (S4): syncs the README link index once at startup, then
-        # every settings.mirror_sync_interval_hours, on the shared DB conn.
         if settings.mirror_sync_enabled:
             mirror_task = asyncio.create_task(mirror_sync_loop(settings, conn))
         logger.info("starting Telegram polling")

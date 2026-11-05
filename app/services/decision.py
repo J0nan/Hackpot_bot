@@ -1,26 +1,23 @@
-"""Qwen System One decision-model client (Specs S5, S6, S7).
+"""Qwen System One decision-model client.
 
 Single outbound seam to the decision API whose request/response shape was
-verified against the live service (ODD log entry L4):
+verified against the live service:
 
     POST {QWEN_API_URL}
     Authorization: Bearer {QWEN_API_KEY}
     Content-Type: application/json
     body: {"model": ..., "state": {"ticket_id", "content"}, "questions": {...}}
 
-Everything the bot shows as a placement candidate comes from
-``answers.folder.probabilities`` (S7); ``answers.needs_admin.noul`` comes from
-the same call. The model used to answer a cost question too — that question is
-retired (remove-cost-tag S3): a stray ``answers.cost`` in a response is simply
-ignored.
+Placement candidates come from ``answers.folder.probabilities``;
+``answers.needs_admin.noul`` comes from the same call. A stray
+``answers.cost`` in a response is ignored.
 
-Security rules for this module (S12):
+Security rules for this module:
   * the API key is held as ``SecretStr`` and is never placed in an exception
     message; any server-returned body excerpt is whitespace-collapsed,
     truncated, and scrubbed of the key before it reaches ``DecisionError``;
   * bounded retries (2 extra attempts) with backoff, 30 s default timeout;
-  * the raw response dict is kept on the result for the SQLite audit row (S10).
-"""
+  * the raw response dict is kept on the result for the SQLite audit row."""
 
 from __future__ import annotations
 
@@ -45,27 +42,21 @@ __all__ = [
     "build_request",
 ]
 
-# Question identifiers used in the request and parsed back from the response.
 FOLDER_QUESTION = "folder"
 ADMIN_QUESTION = "needs_admin"
 
-# Verbatim wording sent to the model (kept here so tests can pin it).
 FOLDER_INSTRUCTIONS = "Which Hackpot leaf category should this resource go into?"
 ADMIN_INSTRUCTIONS = (
     "Is this resource sensitive or unusual enough that a human admin should "
     "double-check the placement?"
 )
 
-# Hard cap on the state content we are willing to send (model limit is far
-# larger: 65536 tokens); callers may pass a smaller cap.
 MAX_STATE_CHARS = 20_000
 
-# Bounded retry policy (Security section): 1 attempt + 2 retries.
 MAX_ATTEMPTS = 3
 RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0)
 RETRY_STATUS_429 = 429
 
-# Response excerpts must stay short and log-safe.
 BODY_EXCERPT_LIMIT = 300
 EXCERPT_SUFFIX = "..."
 REDACTED = "[redacted]"
@@ -128,11 +119,10 @@ def build_request(
     categories: Mapping[str, str],
     max_state_chars: int = MAX_STATE_CHARS,
 ) -> dict[str, Any]:
-    """Build the System One request body (verified shape, L4).
+    """Build the System One request body.
 
-    ``categories`` is the leaf-path -> criteria map from ``CATEGORIES_JSON``
-    (S18); its keys are exactly the folders the model may answer with (S7).
-    """
+    ``categories`` is the leaf-path -> criteria map from ``CATEGORIES_JSON``;
+    its keys are exactly the folders the model may answer with."""
     if not model or not model.strip():
         raise ValueError("model must be a non-empty string")
     if not categories:
@@ -178,7 +168,7 @@ def _number(value: Any) -> float | None:
 def _parse_classification(
     data: dict[str, Any], threshold: float, max_candidates: int
 ) -> ClassificationResult:
-    """Turn a verified-shape response into ranked candidates (S7)."""
+    """Turn a verified-shape response into ranked candidates."""
     answers = data.get("answers")
     if not isinstance(answers, Mapping):
         raise DecisionError(f"decision response carries no answers object for the '{FOLDER_QUESTION}' question")
@@ -216,7 +206,6 @@ def _parse_classification(
         _number(admin_answer.get("noul")) if isinstance(admin_answer, Mapping) else None
     )
 
-    # A legacy "cost" answer may still arrive from the model: ignored (S3).
     raw_request_id = data.get("request_id")
     request_id = raw_request_id if isinstance(raw_request_id, str) else ""
 
@@ -229,12 +218,11 @@ def _parse_classification(
 
 
 class DecisionClient:
-    """Async client for the System One ``/systemone`` endpoint (S5, S6).
+    """Async client for the System One ``/systemone`` endpoint.
 
     The caller owns the ``httpx.AsyncClient`` (so the bot can share one pool);
     this class owns the endpoint URL, the Bearer credential, and the retry
-    policy.
-    """
+    policy."""
 
     def __init__(
         self,
@@ -260,11 +248,10 @@ class DecisionClient:
         self._model = model
         self._client = client
         self._timeout_s = timeout_s
-        # Injectable so tests never wait on real backoff.
         self._sleep: SleepFn = sleep if sleep is not None else asyncio.sleep
 
     def _headers(self) -> dict[str, str]:
-        """Exact auth headers verified against the live API (L4)."""
+        """Exact auth headers verified against the live API."""
         return {
             "Authorization": f"Bearer {self._api_key.get_secret_value()}",
             "Content-Type": "application/json",
@@ -291,8 +278,6 @@ class DecisionClient:
                     self._api_url, json=body, headers=self._headers(), timeout=self._timeout_s
                 )
             except httpx.TransportError as exc:
-                # httpx transport messages carry the URL only, but they are
-                # still user-supplied text: keep them through _safe().
                 last_failure = f"transport error ({type(exc).__name__}: {self._safe(str(exc))})"
                 if is_last:
                     logger.error(
@@ -364,9 +349,6 @@ class DecisionClient:
                 )
             return data
 
-        # Unreachable: every branch above returns or raises.
-        raise DecisionError(self._safe(f"decision request failed: {last_failure}"))
-
     async def classify(
         self,
         ticket_id: str,
@@ -375,12 +357,11 @@ class DecisionClient:
         threshold: float,
         max_candidates: int,
     ) -> ClassificationResult:
-        """Ask the model where ``content`` belongs and rank the options (S5, S7).
+        """Ask the model where ``content`` belongs and rank the options.
 
         ``threshold`` is ``CONFIDENCE_THRESHOLD`` and ``max_candidates`` is
-        ``MAX_CANDIDATES_SHOWN`` from docker compose (S6) — validation of both
-        happens here, before any network call.
-        """
+        ``MAX_CANDIDATES_SHOWN`` from docker compose — validation of both
+        happens here, before any network call."""
         if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
             raise ValueError("threshold must be a number between 0 and 1")
         if not 0.0 <= float(threshold) <= 1.0:

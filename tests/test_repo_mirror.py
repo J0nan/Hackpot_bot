@@ -1,12 +1,11 @@
-"""Repo mirror sync service (repo-mirror-dedup T2; Specs S2, S3, S4, S7).
+"""Repo mirror sync service.
 
-Covers README link extraction (S2), the incremental sync contract: one tree
-call and a head-sha short-circuit when the repo did not move (S3), startup-run
-plus interval loop (S4), and the failure policy: a broken fetch never deletes
-known links, and the state only pins to a head sha after a clean pass so the
-next tick retries exactly the files that failed (S7). All network is injected;
-no live GitHub calls.
-"""
+Covers README link extraction and the incremental sync contract: one tree
+call and a head-sha short-circuit when the repo did not move, the startup and
+interval loop, and the failure policy: a broken fetch never deletes known
+links, and the state only pins to a head sha after a clean pass so the next
+tick retries exactly the files that failed. All network is injected; no live
+GitHub calls."""
 
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -30,6 +29,7 @@ from app.services.repo_mirror import (
     MirrorSyncError,
     extract_readme_links,
     mirror_sync_loop,
+    parse_tree_response,
     sync_mirror_once,
 )
 
@@ -104,10 +104,7 @@ class FakeNet:
         for path, text in self.contents.items():
             if url.endswith(path):
                 return text
-        return None  # absent/failed: the sync must not clobber known rows
-
-
-# ---------------------------------------------------------------- extraction
+        return None
 
 
 def test_extract_reads_bullets_and_canonicalizes() -> None:
@@ -120,7 +117,7 @@ def test_extract_reads_bullets_and_canonicalizes() -> None:
 
 def test_extract_ignores_paragraph_and_non_http_links() -> None:
     keys = [key for key, _ in extract_readme_links(OSINT_README)]
-    assert canonical_url_key("https://paragraph.test") not in keys  # not a bullet
+    assert canonical_url_key("https://paragraph.test") not in keys
     assert not any("mailto" in key or "#" in key or key.startswith("/") for key in keys)
     assert canonical_url_key("https://docs.md") not in keys
 
@@ -134,9 +131,6 @@ def test_extract_dedupes_same_key_within_file() -> None:
 def test_extract_tolerant_of_empty_or_comment_only() -> None:
     assert extract_readme_links("") == []
     assert extract_readme_links("<!-- - [fake](https://x.test) -->") == []
-
-
-# ---------------------------------------------------------------- first sync
 
 
 async def test_first_full_sync_indexes_all_readmes(db: aiosqlite.Connection) -> None:
@@ -167,9 +161,6 @@ async def test_sync_indexes_root_readme_with_empty_folder(db: aiosqlite.Connecti
     assert row is not None and row.folder == ""
 
 
-# ------------------------------------------------------- S3: unchanged short-circuit
-
-
 async def test_unchanged_head_costs_one_tree_call_and_zero_raw_fetches(
     db: aiosqlite.Connection,
 ) -> None:
@@ -182,8 +173,8 @@ async def test_unchanged_head_costs_one_tree_call_and_zero_raw_fetches(
     net.raw_calls.clear()
     result = await sync_mirror_once(make_stub(), db, fetch_tree=net.fetch_tree, fetch_raw=net.fetch_raw)
     assert result["status"] == "unchanged"
-    assert net.tree_calls == 2  # exactly one per run
-    assert net.raw_calls == []  # S3: quiet repo costs no README fetches
+    assert net.tree_calls == 2
+    assert net.raw_calls == []
 
 
 async def test_incremental_fetches_only_changed_blob(db: aiosqlite.Connection) -> None:
@@ -191,7 +182,6 @@ async def test_incremental_fetches_only_changed_blob(db: aiosqlite.Connection) -
     net = FakeNet("head-1", tree_entries((OSINT, "a1"), (WEB, "b1")), contents)
     await sync_mirror_once(make_stub(), db, fetch_tree=net.fetch_tree, fetch_raw=net.fetch_raw)
     net.raw_calls.clear()
-    # OSINT content changes (new blob sha); WEB untouched but head moves.
     new_osint = OSINT_README + "- [Fresh](https://fresh.test) — new\n"
     net.set_repo(
         "head-2",
@@ -211,7 +201,6 @@ async def test_removed_readme_prunes_only_its_own_rows(db: aiosqlite.Connection)
     contents = {f"{OSINT}/README.md": OSINT_README, f"{WEB}/README.md": WEB_README}
     net = FakeNet("head-1", tree_entries((OSINT, "a1"), (WEB, "b1")), contents)
     await sync_mirror_once(make_stub(), db, fetch_tree=net.fetch_tree, fetch_raw=net.fetch_raw)
-    # someone deletes the WEB README (folder gone): its links must vanish
     net.set_repo("head-2", tree_entries((OSINT, "a1")), contents)
     result = await sync_mirror_once(make_stub(), db, fetch_tree=net.fetch_tree, fetch_raw=net.fetch_raw)
     assert result["removed"] == [WEB]
@@ -220,30 +209,24 @@ async def test_removed_readme_prunes_only_its_own_rows(db: aiosqlite.Connection)
     assert (await list_mirror_files(db)).get(WEB) is None
 
 
-# ---------------------------------------------------------------- S7: failures
-
-
 async def test_failed_readme_fetch_keeps_old_rows_and_forces_retry(
     db: aiosqlite.Connection,
 ) -> None:
     contents = {f"{OSINT}/README.md": OSINT_README}
     net = FakeNet("head-1", tree_entries((OSINT, "a1")), contents)
     await sync_mirror_once(make_stub(), db, fetch_tree=net.fetch_tree, fetch_raw=net.fetch_raw)
-    # blob changed but the raw fetch fails (no content entry matches): keep the
-    # old links, do NOT pin head-2
     net.set_repo("head-2", tree_entries((OSINT, "a2")), {})
     result = await sync_mirror_once(make_stub(), db, fetch_tree=net.fetch_tree, fetch_raw=net.fetch_raw)
     assert result["failed"] == 1
-    assert await find_mirror_link(db, canonical_url_key(OSINT_URL)) is not None  # S7: nothing lost
+    assert await find_mirror_link(db, canonical_url_key(OSINT_URL)) is not None
     state = await get_mirror_state(db)
-    assert state is not None and state.head_sha == "head-1"  # next tick retries
+    assert state is not None and state.head_sha == "head-1"
     assert (await list_mirror_files(db))[OSINT] == "a1"
-    # recovery: next tick re-fetches exactly that file and succeeds
     net.contents = {f"{OSINT}/README.md": "## Resources\n\n- [Only](https://only.test) — replaced\n"}
     result = await sync_mirror_once(make_stub(), db, fetch_tree=net.fetch_tree, fetch_raw=net.fetch_raw)
     assert result["status"] == "synced"
     assert await find_mirror_link(db, canonical_url_key("https://only.test")) is not None
-    assert await find_mirror_link(db, canonical_url_key(OSINT_URL)) is None  # stale pruned on clean pass
+    assert await find_mirror_link(db, canonical_url_key(OSINT_URL)) is None
     state = await get_mirror_state(db)
     assert state is not None and state.head_sha == "head-2"
 
@@ -258,14 +241,8 @@ async def test_tree_failure_raises_and_leaves_mirror_intact(db: aiosqlite.Connec
 
 
 async def test_truncated_tree_is_refused(db: aiosqlite.Connection) -> None:
-    # the service itself parses GitHub's response; unit-test the parser helper
-    from app.services.repo_mirror import parse_tree_response
-
     with pytest.raises(MirrorSyncError):
         parse_tree_response({"sha": "s", "tree": [{"path": "x"}], "truncated": True})
-
-
-# ---------------------------------------------------------------- S4: the loop
 
 
 async def test_loop_syncs_at_startup_then_every_interval(db: aiosqlite.Connection) -> None:
@@ -284,8 +261,8 @@ async def test_loop_syncs_at_startup_then_every_interval(db: aiosqlite.Connectio
     stub = make_stub(mirror_sync_interval_hours=1.0)
     with pytest.raises(asyncio.CancelledError):
         await mirror_sync_loop(stub, db, sleep=fake_sleep, sync=fake_sync)
-    assert calls == [1, 2, 3]  # one sync immediately at startup (S4), then per tick
-    assert slept == [3600.0, 3600.0]  # S3: hourly default interval
+    assert calls == [1, 2, 3]
+    assert slept == [3600.0, 3600.0]
 
 
 async def test_loop_survives_sync_failure_and_retries_next_tick(db: aiosqlite.Connection) -> None:
@@ -294,7 +271,7 @@ async def test_loop_survives_sync_failure_and_retries_next_tick(db: aiosqlite.Co
     async def flaky_sync(settings: Any, conn: Any) -> dict[str, Any]:
         calls.append(len(calls) + 1)
         if len(calls) == 1:
-            raise RuntimeError("boom")  # any error must not kill the task (S7)
+            raise RuntimeError("boom")
         return {"status": "synced"}
 
     async def fake_sleep(delay: float) -> None:
@@ -303,4 +280,4 @@ async def test_loop_survives_sync_failure_and_retries_next_tick(db: aiosqlite.Co
 
     with pytest.raises(asyncio.CancelledError):
         await mirror_sync_loop(make_stub(), db, sleep=fake_sleep, sync=flaky_sync)
-    assert calls == [1, 2]  # the failed first pass is retried at the next tick
+    assert calls == [1, 2]

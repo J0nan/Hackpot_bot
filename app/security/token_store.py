@@ -1,9 +1,8 @@
-"""GitHub PAT capture, validation, encryption at rest, and masking (Spec S8, S12).
+"""GitHub PAT capture, validation, encryption at rest, and masking.
 
 A PAT is treated as a secret everywhere: it is validated before storage, stored
 only as a Fernet token, and every failure path returns a generic message that
-never echoes the token. Callers log with :func:`mask`, never the plaintext.
-"""
+never echoes the token. Callers log with :func:`mask`, never the plaintext."""
 
 from __future__ import annotations
 
@@ -14,8 +13,6 @@ from cryptography.fernet import Fernet
 
 from app.config import Settings
 
-# Accepted token shapes. Classic GitHub tokens use these five prefixes;
-# fine-grained tokens use a longer prefix and may contain underscores.
 CLASSIC_PREFIXES: tuple[str, ...] = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_")
 FINE_GRAINED_PREFIX = "github_pat_"
 _TOKEN_BODY_MIN = 16
@@ -27,15 +24,13 @@ _CLASSIC_RE = re.compile(
 )
 _FINE_GRAINED_RE = re.compile(r"github_pat_[A-Za-z0-9_]{16,255}")
 
-# Generic, echo-free messages: nothing that reaches a log may contain the secret.
 INVALID_TOKEN_MESSAGE = "GitHub token is not valid"
 DECRYPT_FAILED_MESSAGE = "Stored GitHub token could not be decrypted"
 
-# Masking: keep the public format prefix and the last four characters only.
 MASK_SEPARATOR = "…"
 MASK_FALLBACK = "***"
 _MIN_MASKABLE_LENGTH = 12
-_MAX_MASK_PREFIX = len(FINE_GRAINED_PREFIX)  # longest prefix we are willing to echo
+_MAX_MASK_PREFIX = len(FINE_GRAINED_PREFIX)
 _MIN_HIDDEN_CHARS = 8
 
 
@@ -70,15 +65,13 @@ def validate_pat_format(token: str) -> bool:
 def looks_like_token(text: str) -> bool:
     """True when a Telegram message body is a single-line bare PAT.
 
-    Used by the capture flow (S8): only a whole message that is exactly one
+    Used by the capture flow: only a whole message that is exactly one
     token is treated as a token, so prose containing a token is not stored and
-    multi-line pastes are not silently truncated.
-    """
+    multi-line pastes are not silently truncated."""
     if not isinstance(text, str) or not text:
         return False
     if any(character in text for character in ("\r", "\n", "\v", "\f", "\x85", "\u2028", "\u2029")):
         return False
-    # Surrounding spaces from a manual paste are tolerated; inner whitespace is not.
     return validate_pat_format(text.strip())
 
 

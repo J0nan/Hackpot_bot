@@ -1,15 +1,13 @@
-"""Pure inline-keyboard builders for the bot (T6; Specs S7, S13, S14).
+"""Pure inline-keyboard builders for the bot.
 
 No I/O and no flow logic: each builder turns already-validated data into an
 aiogram InlineKeyboardMarkup deterministically. Callback payloads are small
 and carry only indices into ``sorted(settings.categories)`` (``c:<i>`` /
 ``f:<i>``), list navigation (``o``, ``p:<i>``), plain allowed tags for the
 interview, ``✅`` / ``❌``, the confirmation-row field edits
-``✏️ Description`` (``d``) / ``🏷️ Tags`` (``t``) and the mid-flow
-``▶️ Continue`` (``keep``) from flow-interrupt-rearm — and never raw folder
-paths (Telegram caps callback_data at 64 bytes, and indices kill the
-path-injection surface).
-"""
+``✏️ Description`` (``d``) / ``🏷️ Tags`` (``t``), and the mid-flow
+``▶️ Continue`` (``keep``) — never raw folder paths (Telegram caps
+callback_data at 64 bytes, and indices kill the path-injection surface)."""
 
 from __future__ import annotations
 
@@ -25,7 +23,7 @@ OTHER_FOLDERS_LABEL = "📂 Other folder…"
 BACK_LABEL = "⬅️ Back"
 NEXT_LABEL = "Next ➡️"
 BUTTONS_PER_ROW = 5
-TG_BUTTON_TEXT_LIMIT = 64  # Telegram caps button text at 64 UTF-16 code units
+TG_BUTTON_TEXT_LIMIT = 64
 
 HELP_TEXT = (
     "Hackpot resource bot — index a public resource into the right leaf category.\n"
@@ -77,7 +75,7 @@ def _fit_folder_button(prefix: str, folder: str, suffix: str = "") -> str:
     label = f"{prefix}{folder}{suffix}"
     if _utf16_len(label) <= TG_BUTTON_TEXT_LIMIT:
         return label
-    room = TG_BUTTON_TEXT_LIMIT - _utf16_len(prefix + suffix) - 1  # 1 for "…"
+    room = TG_BUTTON_TEXT_LIMIT - _utf16_len(prefix + suffix) - 1
     if room <= 0:
         return f"{prefix}…"
     return f"{prefix}…{folder[-room:]}{suffix}"
@@ -89,16 +87,15 @@ def candidates_kb(
     """Number buttons (1..N in rank order) for the candidates_list_html caption.
 
     The full path and confidence percent moved to the HTML message so phones
-    show them whole; payloads stay global ``c:<i>`` indices (S7), and the
-    full-list override button is unchanged.
-    """
+    show them whole; payloads stay global ``c:<i>`` indices, and the
+    full-list override button is unchanged."""
     buttoned = [c for c in candidates if c.folder in folders_sorted]
     rows: list[list[InlineKeyboardButton]] = []
     for offset in range(0, len(buttoned), BUTTONS_PER_ROW):
         rows.append(
             [
                 _button(keycap(offset + i + 1), f"c:{folders_sorted.index(c.folder)}")
-                for i, c in enumerate(buttoned[offset : offset + BUTTONS_PER_ROW])
+                for i, c in enumerate(buttoned[offset: offset + BUTTONS_PER_ROW])
             ]
         )
     rows.append([_button(OTHER_FOLDERS_LABEL, "o")])
@@ -120,7 +117,7 @@ def folders_kb(
         rows.append(
             [
                 _button(keycap(offset + i + 1), f"f:{start + offset + i}")
-                for i, _folder in enumerate(chunk[offset : offset + BUTTONS_PER_ROW])
+                for i, _folder in enumerate(chunk[offset: offset + BUTTONS_PER_ROW])
             ]
         )
     nav: list[InlineKeyboardButton] = []
@@ -130,19 +127,18 @@ def folders_kb(
         nav.append(_button(NEXT_LABEL, f"p:{page + 1}"))
     if nav:
         rows.append(nav)
-    if not rows:  # empty category list can never happen (Settings validates), but stay safe
+    if not rows:
         rows.append([_button(OTHER_FOLDERS_LABEL, "o")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def manual_kb() -> InlineKeyboardMarkup:
-    """unreliable-decision-retry S6: the ask when the model returned no value.
+    """The ask when the model returned no value.
 
     A choice, not a picker: 🛠️ Manual classify opens the full folder list (and
     ends the text-context invite), ❌ Cancel drops the resource. The folders
     themselves only appear after the manual press, so the initial message
-    stays readable when the model is unreliable.
-    """
+    stays readable when the model is unreliable."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_button("🛠️ Manual classify", "m")],
@@ -152,9 +148,9 @@ def manual_kb() -> InlineKeyboardMarkup:
 
 
 def type_kb() -> InlineKeyboardMarkup:
-    """Allowed S13 type tags only — the callback value IS the tag."""
+    """Allowed type tags only — the callback value IS the tag."""
     rows = [
-        [_button(tag, tag) for tag in ENTRY_TYPES[offset : offset + 3]]
+        [_button(tag, tag) for tag in ENTRY_TYPES[offset: offset + 3]]
         for offset in range(0, len(ENTRY_TYPES), 3)
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -165,15 +161,13 @@ def confirm_kb(folder: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [_button(_fit_folder_button("✅ Commit to ", folder), "✅")],
             [_button("❌ Cancel", "❌")],
-            # S6.1 (T4): one row, two field-edit buttons — payloads "d"/"t",
-            # valid only while CONFIRMING. The whole-bullet "e" row is removed.
             [_button("✏️ Description", "d"), _button("🏷️ Tags", "t")],
         ]
     )
 
 
 def resume_kb() -> InlineKeyboardMarkup:
-    """flow-interrupt-rearm S1: ▶️ Continue ("keep") / ❌ Cancel under the prompt."""
+    """▶️ Continue ("keep") / ❌ Cancel under the prompt."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_button("▶️ Continue", "keep")],

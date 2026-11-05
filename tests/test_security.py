@@ -1,10 +1,9 @@
-"""Tests for the T3 security core (Spec S2, S8, S9, S12, S17).
+"""Tests for the security core.
 
 Covers: numeric-ID authorization, the Fernet-encrypted GitHub PAT store, input
 sanitizers (URL / single-line text / category path), and the per-user sliding
 window rate limiter. No network, no real secrets: Fernet keys are generated per
-test and every URL host uses the reserved ``.invalid`` TLD.
-"""
+test and every URL host uses the reserved ``.invalid`` TLD."""
 
 from __future__ import annotations
 
@@ -26,16 +25,13 @@ from app.security.token_store import (
     validate_pat_format,
 )
 
-# --------------------------------------------------------------------------- helpers
-
 ALLOWED_IDS = (123456789, 987654321)
 CATEGORIES = {
     "01_Recon/OSINT": "reconnaissance and OSINT tooling",
     "02_Web_Application/Vulnerability_Specific": "web app vulnerability resources",
 }
-ELLIPSIS = "…"  # the single separator mask() must use
+ELLIPSIS = "…"
 
-# Distinct characters everywhere, so any extra leak inside a masked value shows up.
 VALID_CLASSIC = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz012345"
 VALID_FINE_GRAINED = "github_pat_11ABCDEFG0zY8xW7vU6tS5rQ4pO3nM2lK1jI0hG7fE6dC4bA9zX"
 
@@ -89,9 +85,6 @@ def error_text(exc: BaseException) -> str:
     )
 
 
-# ---------------------------------------------------------------------- authz (S2/S9/S17)
-
-
 def test_is_authorized_true_for_configured_ids(settings: Settings) -> None:
     assert is_authorized(settings, ALLOWED_IDS[0]) is True
     assert is_authorized(settings, ALLOWED_IDS[1]) is True
@@ -117,7 +110,7 @@ def test_is_authorized_rejects_non_int_values(settings: Settings) -> None:
 
 
 def test_is_authorized_rejects_booleans(settings: Settings) -> None:
-    """bool is an int subclass; True must never impersonate a Telegram ID."""
+    """The bool type is an int subclass; True must never impersonate a Telegram ID."""
     assert is_authorized(make_settings([1]), True) is False
     assert is_authorized(make_settings([1]), False) is False
 
@@ -125,9 +118,6 @@ def test_is_authorized_rejects_booleans(settings: Settings) -> None:
 def test_is_authorized_rejects_zero_and_negative_ids(settings: Settings) -> None:
     assert is_authorized(settings, 0) is False
     assert is_authorized(settings, -ALLOWED_IDS[0]) is False
-
-
-# ---------------------------------------------------------- PAT format + capture (S8/S12)
 
 
 @pytest.mark.parametrize(
@@ -173,7 +163,7 @@ def test_validate_pat_format_accepts(token: str) -> None:
         pytest.param("ghp_" + "Ａ" * 36, id="fullwidth-letter"),
         pytest.param("ghp_" + "A" * 18 + "\u200b", id="zero-width-space"),
         pytest.param("ghp_" + "A" * 17 + "\x1b", id="escape-control-char"),
-        pytest.param("ghp_" + "*"*40, id="base64-punctuation"),
+        pytest.param("ghp_" + "*" * 40, id="base64-punctuation"),
         pytest.param(None, id="non-string-none"),
         pytest.param(12345, id="non-string-int"),
     ],
@@ -203,9 +193,6 @@ def test_looks_like_token_accepts_bare_message() -> None:
 )
 def test_looks_like_token_rejects(text: object) -> None:
     assert looks_like_token(text) is False  # type: ignore[arg-type]
-
-
-# --------------------------------------------------------------- encrypt / decrypt (S8/S12)
 
 
 def test_encrypt_then_decrypt_roundtrip(settings: Settings) -> None:
@@ -302,9 +289,6 @@ def test_plaintext_never_appears_in_exception_strings(settings: Settings) -> Non
     assert secret not in error_text(info.value)
 
 
-# ------------------------------------------------------------------------- mask (S12)
-
-
 def test_mask_keeps_only_prefix_and_last_four() -> None:
     assert mask(VALID_CLASSIC) == f"ghp_{ELLIPSIS}{VALID_CLASSIC[-4:]}"
     assert mask(VALID_FINE_GRAINED) == f"github_pat_{ELLIPSIS}{VALID_FINE_GRAINED[-4:]}"
@@ -313,7 +297,7 @@ def test_mask_keeps_only_prefix_and_last_four() -> None:
 def test_mask_leaks_at_most_four_trailing_chars() -> None:
     token = "ghp_" + "".join(chr(ord("A") + i % 26) for i in range(36))
     masked = mask(token)
-    body = token[len("ghp_") :]
+    body = token[len("ghp_"):]
     assert masked.split(ELLIPSIS)[-1] == body[-4:]
     assert body[-5] not in masked
     assert body[4:-4] not in masked
@@ -342,9 +326,6 @@ def test_mask_never_contains_the_secret_body() -> None:
     assert VALID_FINE_GRAINED[11:] not in mask(VALID_FINE_GRAINED)
 
 
-# --------------------------------------------------------------------- sanitize_url (S12/S15)
-
-
 @pytest.mark.parametrize(
     "raw,expected",
     [
@@ -353,12 +334,9 @@ def test_mask_never_contains_the_secret_body() -> None:
         ("https://github.com/a/b?x=1&y=2#readme", "https://github.com/a/b?x=1&y=2#readme"),
         ("https://example.com/Path/To?q=a%20b#frag", "https://example.com/Path/To?q=a%20b#frag"),
         ("https://tool.example.co.uk/", "https://tool.example.co.uk/"),
-        # A dotted host with no path still satisfies the https + FQDN rules.
         ("https://github.com", "https://github.com"),
         ("https://github.com/Owner/Repo/tree/main?tab=readme#section-2",
          "https://github.com/Owner/Repo/tree/main?tab=readme#section-2"),
-        # urlsplit normalises the scheme, so an uppercase scheme is tolerated as
-        # long as it is https; the rest of the value is returned verbatim.
         ("HTTPS://Example.COM/a", "HTTPS://Example.COM/a"),
     ],
 )
@@ -417,9 +395,6 @@ def test_sanitize_url_errors_are_short_and_do_not_echo_input() -> None:
     assert "s3cr3t" not in str(cred.value)
 
 
-# --------------------------------------------------------------------- sanitize_line (S13)
-
-
 def test_sanitize_line_collapses_newlines_to_spaces() -> None:
     out = sanitize_line("first line\nsecond line\r\nthird\rfour")
     assert "\n" not in out and "\r" not in out
@@ -470,9 +445,6 @@ def test_sanitize_line_keeps_plain_bullet_text_intact() -> None:
     assert sanitize_line(line) == line
 
 
-# ---------------------------------------------------------------------- check_folder (S12)
-
-
 def test_check_folder_returns_exact_configured_leaf(settings: Settings) -> None:
     for leaf in CATEGORIES:
         assert check_folder(settings, leaf) == leaf
@@ -507,12 +479,8 @@ def test_check_folder_error_message_is_safe(settings: Settings) -> None:
     with pytest.raises(ValueError) as info:
         check_folder(settings, "../../etc/passwd")
     assert str(info.value)
-    # The rejection must never hand back a usable path.
     with pytest.raises(ValueError):
         check_folder(settings, "01_Recon/OSINT/../01_Recon/OSINT")
-
-
-# ---------------------------------------------------------------------- RateLimiter (S12)
 
 
 def test_rate_limiter_blocks_after_limit_within_window() -> None:
@@ -542,14 +510,14 @@ def test_rate_limiter_allows_again_after_full_window() -> None:
 def test_rate_limiter_window_slides_per_message() -> None:
     clock = FakeClock()
     limiter = RateLimiter(limit_per_min=2, clock=clock)
-    assert limiter.allow(9)  # t = 0
+    assert limiter.allow(9)
     clock.advance(30.0)
-    assert limiter.allow(9)  # t = 30 -> window now full
+    assert limiter.allow(9)
     clock.advance(25.0)
-    assert limiter.allow(9) is False  # t = 55: the t=0 hit has not expired yet
+    assert limiter.allow(9) is False
     clock.advance(5.0)
-    assert limiter.allow(9) is True  # t = 60: the t=0 hit is out of the window
-    assert limiter.allow(9) is False  # hits are now t=30 and t=60
+    assert limiter.allow(9) is True
+    assert limiter.allow(9) is False
 
 
 def test_rate_limiter_does_not_refill_before_the_oldest_hit_expires() -> None:

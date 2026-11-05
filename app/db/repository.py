@@ -1,10 +1,9 @@
-"""Typed data-access functions over an aiosqlite connection (Spec S10, S17).
+"""Typed data-access functions over an aiosqlite connection.
 
 Every query is fully parameterized. The only SQL text built at runtime is
 assembled from hard-coded identifier whitelists — never from caller data —
 so hostile strings can only ever be stored as inert values. Each mutating
-function commits, keeping the file durable across restarts.
-"""
+function commits, keeping the file durable across restarts."""
 
 from __future__ import annotations
 
@@ -21,15 +20,10 @@ from app.db.database import (
 )
 from app.db.models import GithubToken, MirrorLink, MirrorState, Resource, UserUploadStats
 
-# Columns of `resources` a caller may update alongside a state change.
-# `state` is the positional argument; id/tg_user_id/url/kind/created_at are
-# immutable, and updated_at is always written from utc_now().
 RESOURCE_UPDATE_COLUMNS: frozenset[str] = frozenset(
     {"context", "folder", "entry_line", "commit_url", "error"}
 )
 
-# Columns of `decisions` accepted by record_decision. `probabilities` is an
-# alias for probabilities_json; dict values for JSON columns are serialized.
 DECISION_COLUMNS: frozenset[str] = frozenset(
     {
         "request_id",
@@ -37,7 +31,6 @@ DECISION_COLUMNS: frozenset[str] = frozenset(
         "confidence",
         "probabilities_json",
         "needs_admin",
-        "cost_choice",
         "raw_json",
     }
 )
@@ -47,7 +40,7 @@ _DECISION_JSON_COLUMNS: frozenset[str] = frozenset({"probabilities_json", "raw_j
 async def upsert_user(
     conn: aiosqlite.Connection, tg_user_id: int, username: str
 ) -> None:
-    """Insert a user or refresh username/last_seen; first_seen stays stable (S17)."""
+    """Insert a user or refresh username/last_seen; first_seen stays stable."""
     now = utc_now()
     await conn.execute(
         """
@@ -133,7 +126,7 @@ async def set_resource_state(
 
     assignments = ["state = ?", "updated_at = ?"]
     params: list[Any] = [state, utc_now()]
-    for column in sorted(updates):  # stable order, whitelisted identifiers only
+    for column in sorted(updates):
         assignments.append(f"{column} = ?")
         params.append(updates[column])
     params.append(resource_id)
@@ -155,7 +148,7 @@ async def get_resource(conn: aiosqlite.Connection, resource_id: int) -> Resource
 async def get_active_resource_for_user(
     conn: aiosqlite.Connection, tg_user_id: int
 ) -> Resource | None:
-    """Newest resource of *tg_user_id* still in a non-final state (resume, S10)."""
+    """Newest resource of *tg_user_id* still in a non-final state."""
     placeholders = ", ".join("?" for _ in ACTIVE_STATES)
     async with conn.execute(
         f"SELECT * FROM resources "
@@ -244,7 +237,7 @@ async def audit(
     resource_id: int | None = None,
     detail: str = "",
 ) -> int:
-    """Append an audit trail row (user IDs plus usernames kept for audit, S17)."""
+    """Append an audit trail row."""
     cursor = await conn.execute(
         """
         INSERT INTO audit_log (tg_user_id, resource_id, action, detail, created_at)
@@ -254,13 +247,6 @@ async def audit(
     )
     await conn.commit()
     return cursor.lastrowid
-
-
-# ---------------------------------------------------------------- mirror ---- #
-# Data access for the repo mirror (repo-mirror-dedup S1/S2/S6/S7). The mirror
-# tables are written only by app/services/repo_mirror.py and by the post-commit
-# upsert in the flow; readers must never re-implement the canonical key — the
-# caller passes canonical_url_key(url) so intake and sync agree on identity.
 
 
 async def upsert_mirror_link(

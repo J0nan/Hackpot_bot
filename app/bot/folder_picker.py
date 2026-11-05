@@ -23,7 +23,7 @@ from collections.abc import Sequence
 
 from app.services.decision import FolderCandidate
 
-PAGE_SIZE = 10  # nominal leaves per page; domains are kept whole (see page_windows)
+PAGE_SIZE = 10
 
 
 def keycap(number: int) -> str:
@@ -67,10 +67,10 @@ def page_windows(
         offset = 0
         while offset < len(folders):
             if windows and len(windows[-1][1]) + len(folders) - offset <= size:
-                windows[-1][1].extend(folders[offset:])  # pack into the open page
+                windows[-1][1].extend(folders[offset:])
                 break
             take = min(size, len(folders) - offset)
-            windows.append((start + offset, list(folders[offset : offset + take])))
+            windows.append((start + offset, list(folders[offset: offset + take])))
             offset += take
         start += len(folders)
     return windows

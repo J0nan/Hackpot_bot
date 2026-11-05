@@ -94,7 +94,7 @@ async def test_loop_survives_system_exit_from_fetch(monkeypatch):
         await cs.category_refresh_loop(
             make_settings(), sleep=sleep,
             now=lambda: datetime(2026, 10, 26, 22, 0))
-    assert len(slept) == 2  # failed refresh did not kill the loop
+    assert len(slept) == 2
 
 
 def test_hot_swap_never_mutates_old_snapshot(monkeypatch):
@@ -118,8 +118,6 @@ def test_unchanged_map_no_backup_churn(monkeypatch, tmp_path):
                                         "02_Web_Application/Proxies_and_Scanners": "stable"})
     cs.apply_refresh(st, env_file=env)
     cs.apply_refresh(st, env_file=env)
-    # The in-memory map never changed; the .env gained the second leaf once and
-    # the second refresh was a no-op — one rolling backup, no timestamp churn.
     assert len(list(tmp_path.glob(".env.bak*"))) == 1
 
 
@@ -146,7 +144,6 @@ async def test_cli_crlf_and_missing_env(monkeypatch, tmp_path, capsys):
     original = b"TARGET_REPO=HackPot-HQ/Hackpot\r\nCATEGORIES_JSON={}\r\n"
     env.write_bytes(original)
     assert mod.main(["--env", str(env), "--dry-run"]) == 0
-    # dry-run: no write at all, CRLF bytes intact
     assert env.read_bytes() == original
 
     missing = tmp_path / "absent.env"

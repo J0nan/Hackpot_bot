@@ -1,68 +1,46 @@
-"""Bot orchestration flow (T6; Specs S1-S9, S14) — deliberately aiogram-free.
+"""Bot orchestration flow — deliberately aiogram-free.
 
-Everything the Telegram layer does goes through :class:`ResourceFlow`: the
-handlers in app/bot/handlers.py only translate Telegram objects into calls
-here and render the returned :class:`FlowResult` actions (reply texts,
-keyboard specs, message deletion). The FSM lives in the ``resources.state``
-column (S10), so every method is resume-safe: a fresh process reads the
-user's active resource and continues where it left off.
+All Telegram-facing work goes through :class:`ResourceFlow`: the handlers in
+app/bot/handlers.py translate Telegram objects into calls here and render the
+returned :class:`FlowResult` actions. The FSM lives in the
+``resources.state`` column, so every method is resume-safe.
 
-Design contracts (ODD L8 seam contract + L7 follow-ups honored here):
-  * L7-1: entry name/description pass ``sanitize_line`` AND are refused when
-    they contain ``[``, ``]`` or a backtick (bullet-injection guard).
-  * L7-2: the README stored for classification is cut to the first
-    ``README_EXCERPT_CHARS`` (6000) before reaching ``classify()``.
-  * L7-3: real GitHub clients are built only via :func:`make_github_factory`,
-    which always pins ``settings.target_repo`` — never the module default.
-  * L7-4: :meth:`ResourceFlow.handle_decision` announces itself through the
-    optional progress sink before the (worst-case ~93 s) classify retries run,
-    so a slow decision never looks like a frozen bot. Best-effort only.
-  * L7-5: FetchError/DecisionError land in audit rows with their status /
-    request-id-bearing message; the user only ever sees the safe wording.
-  * Callback payloads carry indices into ``sorted(settings.categories)``
-    only (64-byte limit, no raw paths); the flow resolves them back.
-  * T4 (entry-bullet-edit-confirm, S5/S6): the confirmation card carries an
-    extra row, ``✏️ Description`` ("d") / ``🏷️ Tags`` ("t"), honored only while
-    CONFIRMING. A press answers as a NEW message (``FlowResult.new_message``
-    + ``parse_mode``) with the CURRENT field extracted via
-    ``parse_entry_line`` in a pre-escaped HTML ``<pre>`` block, and records a
-    process-local pending-edit marker (app/bot/pending_edits.py) holding the
-    card ids captured from the user's own callback. The next CONFIRMING text
-    is the paste-back: it is rebuilt through ``build_entry_line`` (name/url
-    stay the reviewed ones), persisted, re-previewed exactly like
-    ``_build_preview``, and the previous card is deleted via
-    ``FlowResult.delete_outgoing``. Without a marker, CONFIRMING text is only
-    ever answered with ``CONFIRMING_HINT`` (the whole-bullet paste UX is
-    removed; the L7-1 bracket/backtick guard is reused for descriptions).
-
-Hardening (T7; ODD L11 a/b/c), all pinned in tests/test_bot_flow.py:
-  * L11-a: those indices are parsed strictly (``^\\d+$``, ASCII digits) — a
-    padded, signed, zero-prefixed, underscored or non-ASCII-digit payload is
-    rejected exactly like ``c:abc``.
-  * L11-b: ``handle_confirm`` catches the traversal gate's ValueError from a
-    tampered ``resources.folder``: it stays CONFIRMING, makes no HTTP call, and
-    records a ``commit_rejected`` audit row with the sanitized folder.
-  * L11-c: the "thinking…" reply above, delivered as one extra reply.
+Behavioral contracts:
+  * entry name/description pass ``sanitize_line`` and are refused when they
+    contain ``[``, ``]`` or a backtick (bullet-injection guard).
+  * the README stored for classification is cut to ``README_EXCERPT_CHARS``
+    before reaching ``classify``.
+  * GitHub clients are built only via :func:`make_github_factory`, which pins
+    ``settings.target_repo``.
+  * :meth:`ResourceFlow.handle_decision` announces itself through the optional
+    progress sink before the classify retries run.
+  * FetchError/DecisionError land in audit rows; the user only sees safe text.
+  * callback payloads carry indices into ``sorted(settings.categories)`` only.
+  * the confirmation card carries the ``✏️ Description`` ("d") /
+    ``🏷️ Tags`` ("t") row while CONFIRMING. A press answers as a new message
+    with the current field in a pre-escaped ``<pre>`` block and records a
+    process-local pending-edit marker. The next CONFIRMING text is the
+    paste-back: rebuilt through ``build_entry_line``, persisted, re-previewed,
+    and the previous card is deleted. Without a marker, CONFIRMING text only
+    gets ``CONFIRMING_HINT``.
+  * callback indices are parsed strictly as ASCII digits.
+  * ``handle_confirm`` catches the traversal gate's ValueError from a tampered
+    ``resources.folder``: it stays CONFIRMING, makes no HTTP call, and records
+    a ``commit_rejected`` audit row.
 
 Secrets: PATs are validated, Fernet-encrypted and the capture message is
 flagged for deletion; plaintext tokens never appear in replies or audit.
 
-flow-interrupt-rearm (S1, S2, S4/S5 — user-corrected): the step the flow
-waits on decides how a text update is read. Text-driven steps (PAT, summary,
-interview answers, the ✏️/🏷️ paste-back while its marker is set) consume the
-next message directly — the prompt must never interrupt them. A text a
-BUTTON-driven step cannot use (candidate/folder picker, confirmation card
-without a pending edit, NEW) is answered with the Continue/Cancel prompt
-(``FLOW_INTERRUPTED`` + ``ResumeKB``) and never processed. ▶️ Continue
-("keep") re-sends the current step's message (:meth:`ResourceFlow.handle_resume`);
-the unreliable-placement context-retry is button-gated too: its invite is
-armed by ``_no_candidates_step`` and ends on any button press (S5). /start
-during a flow offers the same two buttons.
-"""
+The waiting step decides how a text update is read. Text-driven steps (PAT,
+summary, interview answers, the field paste-back while its marker is set)
+consume the next message directly. A text a button-driven step cannot use is
+answered with the Continue/Cancel prompt (``FLOW_INTERRUPTED`` + ``ResumeKB``)
+and never processed. Continue re-sends the current step's message; the
+unreliable-placement context retry is button-gated too. /start during a flow
+offers the same two buttons."""
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -71,8 +49,79 @@ from typing import Any
 import aiosqlite
 import httpx
 
-from app.config import Settings
 from app.bot import folder_picker, manual_placement, pending_edits, rearm
+from app.bot.flow_confirm import ConfirmMixin
+from app.bot.flow_interview import InterviewMixin
+from app.bot.flow_messages import (
+    _DESC_MAX,
+    _MAX_CONTEXT_CHARS,
+    _NAME_MAX,
+    ALREADY_COMMITTED,
+    ALREADY_COMMITTED_OUTSIDE,
+    ALREADY_IN_PROGRESS,
+    ANALYZING,
+    ASK_CONTEXT,
+    ASK_DESCRIPTION,
+    ASK_NAME,
+    ASK_PAT_START,
+    ASK_PLATFORMS,
+    ASK_SUMMARY,
+    ASK_TYPE,
+    CANCELLED_MSG,
+    COMMIT_PUBLIC_REMINDER,
+    COMMIT_REJECTED,
+    COMMITTED_REPLY,
+    CONFIRMING_HINT,
+    DECISION_UNRELIABLE_USER,
+    DECRYPT_FAILED,
+    EDIT_DESC_ASK,
+    EDIT_DESC_EMPTY,
+    EDIT_DESC_ONE_LINE,
+    EDIT_DESC_TOO_LONG,
+    EDIT_NO_TYPE_TAG,
+    EDIT_RETRY_DETAIL_MAX,
+    EDIT_TAGS_ASK,
+    EDIT_TAGS_COLON,
+    EDIT_TYPE_VALUE,
+    EDIT_UNAVAILABLE,
+    ENTRY_BUILD_FAILED,
+    FLOW_INTERRUPTED,
+    FORGOTTEN,
+    GREETING_READY,
+    INVALID_FIELD,
+    INVALID_TYPE,
+    MANUAL_PLACEMENT_NOTE,
+    NEED_TOKEN_FOR_LINK,
+    NEEDS_ADMIN_NOTE,
+    NEEDS_ADMIN_THRESHOLD,
+    NOTHING_PENDING,
+    PAT_SAVED,
+    PAT_STILL_NEEDED,
+    PLACED,
+    PLACEMENT_HINT,
+    PREVIEW,
+    README_EXCERPT_CHARS,
+    SLOW_DOWN,
+    STATS_EMPTY,
+    STATS_NO_COMMITS,
+    STATS_TAGS_EMPTY,
+    SUMMARY_MAX_CHARS,
+    UNKNOWN_CALLBACK,
+    UNKNOWN_FOLDER,
+    USAGE_HINT,
+)
+from app.bot.flow_stats import StatsMixin
+from app.bot.flow_types import (
+    CandidatesKB,
+    ConfirmKB,
+    FlowResult,
+    FoldersKB,
+    ManualKB,
+    ResumeKB,
+    TypeKB,
+)
+from app.bot.flow_utils import PARSE_HTML, _dump_iv, _first_paragraph, _load_iv, _transition
+from app.config import Settings
 from app.db.database import ACTIVE_STATES
 from app.db.repository import (
     audit,
@@ -82,293 +131,102 @@ from app.db.repository import (
     get_active_resource_for_user,
     get_github_token,
     get_resource,
-    get_upload_leaderboard,
     list_resources_by_states,
     record_decision,
     save_github_token,
     set_resource_state,
-    upsert_mirror_link,
     upsert_user,
 )
 from app.logging_config import get_logger
 from app.security.rate_limit import RateLimiter
 from app.security.sanitizers import sanitize_line, sanitize_url
 from app.security.token_store import decrypt_pat, encrypt_pat, looks_like_token, mask
-from app.services.decision import DecisionClient, DecisionError, FolderCandidate
+from app.services.decision import DecisionClient, DecisionError
 from app.services.github import (
-    LEGACY_COST_TAGS,
     ENTRY_TYPES,
-    DuplicateError,
-    EntryLineError,
     FetchError,
     GitHubClient,
-    build_entry_line,
     canonical_url_key,
-    leaf_title_from_path,
-    parse_entry_line,
     parse_repo_url,
 )
 
-README_EXCERPT_CHARS = 6000  # L7-2 excerpt cap handed to the decision model
-SUMMARY_MAX_CHARS = 6000
-_STATS_DISPLAY_LIMIT = 10  # /stats renders at most this many rows per board
-
-
-def _medal(rank: int) -> str:
-    return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"{rank}.")
-
-
-def _links_noun(count: int) -> str:
-    return f"{count} {'link' if count == 1 else 'links'}"
-_NAME_MAX = 120
-_DESC_MAX = 500
-_MAX_CONTEXT_CHARS = 2 * SUMMARY_MAX_CHARS  # stored-context cap across retries
-IV_FIELDS: tuple[str, ...] = ("name", "description", "type", "platforms")
-NEEDS_ADMIN_THRESHOLD = 0.5  # S7
-
 URL_RE = re.compile(r"https?://\S+")
-# Intake duplicate gate (L12): every state except FAILED/CANCELLED can hold a
-# live or placed submission — the check is global, across all users.
 DUPLICATE_ELIGIBLE_STATES: tuple[str, ...] = ACTIVE_STATES + ("COMMITTED",)
-_TOKEN_SPLIT_RE = re.compile(r"[\s,;]+")
-_PLATFORM_UNSAFE = set("`|'\"\\[](){}")
-# L11-a: callback indices are ASCII digits only, in canonical spelling. int()
-# alone would happily take " 1", "+1", "1_0" and even Arabic-Indic digits ("١"),
-# and "^\d+$" alone would still take "01" — so the shape is matched first, then
-# the round-trip. Keyboards only ever emit str(i), so any other spelling of the
-# same index is a hand-made payload and is rejected like "c:abc".
 _INDEX_RE = re.compile(r"^\d+$", re.ASCII)
 
 ProgressSink = Callable[[str], Awaitable[None]]
 
 logger = get_logger(__name__)
 
-
-def _transition(resource_id: Any, old: str, new: str) -> None:
-    """S5: DEBUG state transition with the ``res=<id>`` correlation token."""
-    logger.debug("state res=%s %s->%s", resource_id, old, new)
-
-# --- user-visible wording (short, safe, no internals, never a secret) -------- #
-SLOW_DOWN = "You are sending too fast — please slow down and try again in a minute."
-ASK_PAT_START = (
-    "👋 Welcome, Hackpoter! First, send me your GitHub Personal Access Token "
-    "as one bare message.\n"
-    "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
-    "Set the following:\n"
-    "    - Expiration to 'No expiration'.\n" 
-    "    - Select 'Only selected repositories' and choose the 'Hackpot' repo on the Repository access.\n"
-    "    - Under 'Repository permissions', select 'Add permissions' then add 'Contents' and set it to 'Read and write'.\n\n"
-    "Generate the token, copy it, and send it to me as one bare message.\n"
-    "I will store it encrypted. It is used to commit the resource under your own GitHub account."
-)
-GREETING_READY = (
-    "👋 Welcome back! Send the https link of the resource you want indexed. GitHub "
-    "repo links are read automatically; for anything else I will ask you for a "
-    "short summary.\nRemember: all links must be public."
-)
-PAT_SAVED = (
-    "✅ Token stored (encrypted). Send the https link of the resource you want "
-    "indexed. \nRemember: all links must be public."
-)
-PAT_STILL_NEEDED = (
-    "I still need your GitHub token, send the bare token as one message "
-    "(stored encrypted, never echoed back)."
-)
-NEED_TOKEN_FOR_LINK = (
-    "Before I can index that link, send me your GitHub Personal Access Token.\n"
-    "Here you can create one: https://github.com/settings/personal-access-tokens/new?name=Hackpot%20Bot&target_name=HackPot-HQ\n"
-    "Set the following:\n"
-    "    - Expiration to 'No expiration'.\n" 
-    "    - Select 'Only selected repositories' and choose the 'Hackpot' repo on the Repository access.\n"
-    "    - Under 'Repository permissions', select 'Add permissions' then add 'Contents' and set it to 'Read and write'.\n\n"
-    "Generate the token, copy it, and send it to me as one bare message.\n"
-    "I will store it encrypted. It is used to commit the resource under your own GitHub account."
-)
-USAGE_HINT = (
-    "Send exactly one https link (for example https://github.com/owner/repo). For a "
-    "non-GitHub resource, send just its link and I will ask for a summary. "
-    "Remember: all links must be public."
-)
-ASK_SUMMARY = (
-    "Send me a short summary of what that resource is about — remember: all "
-    "links must be public."
-)
-ALREADY_COMMITTED = "⚠️ That link is already on file in 📁 {folder} — nothing new was created."
-ALREADY_IN_PROGRESS = (
-    "⚠️ That link is already being processed (resource #{resource_id}{folder_part}). "
-    "It has not been committed yet — try again once it finishes."
-)
-# repo-mirror-dedup S1: the URL is listed in the target repo but the bot never
-# saw it (added by hand or by another tool) — the mirror says so at intake.
-ALREADY_COMMITTED_OUTSIDE = (
-    "⚠️ That link is already listed in 📁 {folder} of the Hackpot repo "
-    "(added outside this bot) — nothing new was created."
-)
-ANALYZING = "🤔 Analyzing… send /cancel anytime"  # L7-4: shown before the slow call
-DECISION_UNRELIABLE_USER = (
-    "🤖 The decision model did not return a reliable result — nothing was "
-    "suggested. Send a few words about this resource and I'll classify it "
-    "again with that extra context, or press 🛠️ Manual classify to pick a "
-    "folder yourself."
-)
-MANUAL_PLACEMENT_NOTE = (
-    "🛠️ Manual classification it is — pick a folder by its number below. "
-    "Text messages no longer count as classification context for this resource."
-)
-PLACEMENT_HINT = (
-    "Pick a destination folder — press its number above (📂 Other folder… "
-    "lists every category)."
-)
-UNKNOWN_FOLDER = "That folder is not in the configured category list."
-ASK_NAME = "What display name should the entry use? (one line, no [ ] or backticks)"
-ASK_DESCRIPTION = (
-    "Now the description — one line: what it does and why it matters "
-    "(no [ ] or backticks)."
-)
-ASK_TYPE = "Pick the type tag:"
-ASK_PLATFORMS = (
-    "Optional platform/tech tags, space-separated (e.g. linux docker), "
-    'or send "none".'
-)
-ASK_CONTEXT = (
-    "Give me a one-line description of what this resource is — remember: all "
-    "links must be public."
-)
-INVALID_FIELD = "{label} can't contain [ ] or backticks — please re-send without them."
-INVALID_TYPE = f"Pick one of: {', '.join(ENTRY_TYPES)}."
-ENTRY_BUILD_FAILED = (
-    "Some collected answers can't form a valid entry line — let's re-check them."
-)
-PLACED = "Placing in 📁 {folder}."
-NEEDS_ADMIN_NOTE = (
-    "⚠️ The model flags this as sensitive — please double-check the placement "
-    "before committing."
-)
-PREVIEW = "Here is the entry bullet — confirm to commit:"
-COMMITTED_REPLY = "✅ {status} → {url}"
-COMMIT_REJECTED = (
-    "⛔ That destination is not one of the configured categories — nothing was "
-    "committed. Use /cancel, then send the link again."
-)
-CANCELLED_MSG = "🚫 Cancelled — nothing was uploaded. Send a new link any time."
-NOTHING_PENDING = "There is nothing pending to cancel. /start to begin."
-STATS_EMPTY = (
-    "🏆 No links have been committed yet — the leaderboard is waiting for its first 🥇."
-)
-STATS_TAGS_EMPTY = "🏷️ No tags on file yet — tags ride the committed entries."
-STATS_NO_COMMITS = "You have not committed any links yet."
-CONFIRMING_HINT = (
-    "Use the buttons above — ✅ Commit, ❌ Cancel, or ✏️ Description / 🏷️ Tags "
-    "to edit one field before committing — or /cancel to abort."
-)
-# T4 (entry-bullet-edit-confirm, S5/S6): ✏️ Description / 🏷️ Tags wording,
-# user-safe and static — current values ride in their own escaped code block.
-EDIT_DESC_ASK = (
-    "✏️ Copy the current description below, modify it (one line, no [ ] or "
-    "backticks, at most 500 characters), then send the new description back. "
-    "Nothing is committed until you press ✅ — the buttons above stay usable "
-    "meanwhile."
-)
-EDIT_TAGS_ASK = (
-    "🏷️ Copy the tags below, edit them on one line (the first tag must stay a "
-    "`type:` tag, the rest are plain platform tags), then send the new tags "
-    "back. Nothing is committed until you press ✅ — the buttons above stay "
-    "usable meanwhile."
-)
-EDIT_DESC_ONE_LINE = "The description must be one line — send it again without line breaks."
-EDIT_DESC_EMPTY = "The description is empty — send the new description on one line."
-EDIT_DESC_TOO_LONG = (
-    f"The description exceeds the {_DESC_MAX} character limit — shorten it and send it again."
-)
-EDIT_NO_TYPE_TAG = (
-    "Missing type tag: the first tag must be one of "
-    + ", ".join(f"`type:{tag}`" for tag in ENTRY_TYPES)
-    + " — fix it and send the tags again."
-)
-EDIT_TYPE_VALUE = (
-    "The type tag must be one of "
-    + ", ".join(ENTRY_TYPES)
-    + " — fix it and send the tags again."
-)
-EDIT_TAGS_COLON = (
-    "Platform tags must be plain words without ':' — only the first tag may "
-    "be a `type:` tag — fix it and send the tags again."
-)
-EDIT_UNAVAILABLE = "This entry can't be prepared for editing right now — use ✅ to commit or ❌ to cancel."
-EDIT_RETRY_DETAIL_MAX = 200  # cap for a validator-error line echoed back for retry
-FORGOTTEN = "🧹 Your stored GitHub token was deleted. /start to save a new one."
-DECRYPT_FAILED = (
-    "Your stored GitHub token could not be decrypted. Use /forget, then /start "
-    "to save a new one."
-)
-UNKNOWN_CALLBACK = "That button is no longer available — /start or send the link again."
-COMMIT_PUBLIC_REMINDER = " Remember: all links must be public."
-# flow-interrupt-rearm (S1 + S4): shown for a text update the CURRENT step
-# cannot use (button-driven steps); the buttons decide — ▶️ Continue re-sends
-# the step's message, ❌ Cancel drops it.
-FLOW_INTERRUPTED = (
-    "⏸️ The step I am waiting on is driven by buttons, so I did not treat "
-    "that message as an answer. Press ▶️ Continue to re-send the current "
-    "step's message (its card may also invite a text reply), or ❌ Cancel "
-    "to drop this resource (or use /cancel anytime)."
-)
-
-# --- keyboard specs (plain data; handlers render them via app.bot.keyboards) - #
+__all__ = [
+    "ALREADY_COMMITTED",
+    "ALREADY_COMMITTED_OUTSIDE",
+    "ALREADY_IN_PROGRESS",
+    "ANALYZING",
+    "ASK_CONTEXT",
+    "ASK_DESCRIPTION",
+    "ASK_NAME",
+    "ASK_PAT_START",
+    "ASK_PLATFORMS",
+    "ASK_SUMMARY",
+    "ASK_TYPE",
+    "CANCELLED_MSG",
+    "COMMITTED_REPLY",
+    "COMMIT_PUBLIC_REMINDER",
+    "COMMIT_REJECTED",
+    "CONFIRMING_HINT",
+    "DECISION_UNRELIABLE_USER",
+    "DECRYPT_FAILED",
+    "EDIT_DESC_ASK",
+    "EDIT_DESC_EMPTY",
+    "EDIT_DESC_ONE_LINE",
+    "EDIT_DESC_TOO_LONG",
+    "EDIT_NO_TYPE_TAG",
+    "EDIT_RETRY_DETAIL_MAX",
+    "EDIT_TAGS_ASK",
+    "EDIT_TAGS_COLON",
+    "EDIT_TYPE_VALUE",
+    "EDIT_UNAVAILABLE",
+    "ENTRY_BUILD_FAILED",
+    "FLOW_INTERRUPTED",
+    "FORGOTTEN",
+    "GREETING_READY",
+    "INVALID_FIELD",
+    "INVALID_TYPE",
+    "MANUAL_PLACEMENT_NOTE",
+    "NEEDS_ADMIN_NOTE",
+    "NEED_TOKEN_FOR_LINK",
+    "NOTHING_PENDING",
+    "PAT_SAVED",
+    "PAT_STILL_NEEDED",
+    "PLACED",
+    "PLACEMENT_HINT",
+    "PREVIEW",
+    "README_EXCERPT_CHARS",
+    "SLOW_DOWN",
+    "STATS_EMPTY",
+    "STATS_NO_COMMITS",
+    "STATS_TAGS_EMPTY",
+    "SUMMARY_MAX_CHARS",
+    "UNKNOWN_CALLBACK",
+    "UNKNOWN_FOLDER",
+    "USAGE_HINT",
+    "AppDeps",
+    "CandidatesKB",
+    "ConfirmKB",
+    "FlowResult",
+    "FoldersKB",
+    "ManualKB",
+    "ResourceFlow",
+    "ResumeKB",
+    "TypeKB",
+    "make_decision_factory",
+    "make_github_factory",
+]
 
 
-@dataclass(frozen=True)
-class CandidatesKB:
-    candidates: tuple[FolderCandidate, ...]
 
 
-@dataclass(frozen=True)
-class FoldersKB:
-    page: int = 0
-
-
-@dataclass(frozen=True)
-class ManualKB:
-    """Unreliable-decision ask: 🛠️ Manual classify / ❌ Cancel, no folders yet (S6)."""
-
-
-@dataclass(frozen=True)
-class TypeKB:
-    pass
-
-
-@dataclass(frozen=True)
-class ConfirmKB:
-    folder: str
-
-
-@dataclass(frozen=True)
-class ResumeKB:
-    """flow-interrupt-rearm S1: ▶️ Continue / ❌ Cancel under the prompt."""
-
-    pass
-
-
-@dataclass(frozen=True)
-class FlowResult:
-    """Actions for the handler: reply texts, one keyboard, delete this message.
-
-    ``new_message`` asks a callback answer to go out as fresh message(s) instead
-    of editing the button bubble — the ✏️ Description / 🏷️ Tags reply must
-    leave the ✅/❌ confirmation usable (T4, S6.2). ``parse_mode`` (e.g.
-    ``"HTML"``) is handed to every send of this result, so the flow can ship
-    pre-escaped code blocks without changing the bot-wide default (none): the
-    flow owns the escaping, the handler only renders. ``delete_outgoing``
-    names ``(chat_id, message_id)`` pairs the renderer must delete after
-    sending — only ever the card ids captured from the user's OWN button press
-    (T4, S6.3/S6.5), never caller-supplied values.
-    """
-
-    replies: tuple[str, ...] = ()
-    keyboard: CandidatesKB | FoldersKB | ManualKB | TypeKB | ConfirmKB | ResumeKB | None = None
-    delete_message: bool = False
-    new_message: bool = False
-    parse_mode: str | None = None
-    delete_outgoing: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass
@@ -386,7 +244,7 @@ class AppDeps:
 def make_github_factory(
     settings: Settings, http: httpx.AsyncClient
 ) -> Callable[[str | None], GitHubClient]:
-    """L7-3: pin ``settings.target_repo`` on every GitHubClient we build."""
+    """Pin ``settings.target_repo`` on every GitHubClient we build."""
 
     def factory(token: str | None) -> GitHubClient:
         return GitHubClient(token, http, settings.target_repo)
@@ -408,51 +266,23 @@ def make_decision_factory(
     return factory
 
 
-# --- interview state helpers -------------------------------------------------- #
 
 
-def _dump_iv(iv: dict[str, Any]) -> str:
-    return json.dumps(iv, sort_keys=True)
 
 
-def _load_iv(entry_line: str) -> dict[str, Any]:
-    """Partial interview answers ride in the whitelisted ``entry_line`` column
-    as JSON until the final S13 bullet replaces them."""
-    if not entry_line:
-        return {}
-    try:
-        data = json.loads(entry_line)
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
-def _first_paragraph(text: str) -> str:
-    para = (text or "").strip().split("\n\n", 1)[0].strip()
-    return sanitize_line(para, _DESC_MAX)
 
 
-PARSE_HTML = "HTML"  # per-result parse mode (T4); the bot default stays unset
 
 
-def _html_escape(text: str) -> str:
-    """Telegram HTML-entity escape: only ``&``, ``<`` and ``>`` are special."""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _code_block(text: str) -> str:
-    """One <pre> block: renders monospace, and copying it yields the value
-    verbatim (S6.2 copy fidelity). Escaped here so no payload can break markup."""
-    return f"<pre>{_html_escape(text)}</pre>"
-
-
-class ResourceFlow:
-    """One instance per process; all state lives in SQLite (S10)."""
+class ResourceFlow(InterviewMixin, ConfirmMixin, StatsMixin):
+    """One instance per process; all state lives in SQLite."""
 
     def __init__(self, deps: AppDeps) -> None:
         self.deps = deps
-
-    # -- primitives ----------------------------------------------------------- #
 
     async def _touch(self, user_id: int | None, username: str | None) -> None:
         if isinstance(user_id, int) and not isinstance(user_id, bool):
@@ -475,20 +305,17 @@ class ResourceFlow:
         )
 
     async def _emit(self, progress: ProgressSink | None, text: str) -> None:
-        """L7-4/L11-c: best-effort early feedback (a slow call must not look frozen).
+        """Best-effort early feedback (a slow call must not look frozen).
 
         The sink is the caller's rendering concern; a refused send must never
         abort the flow or leak an internal error into chat, so failures here
-        are swallowed after the audit-safe decision call proceeds anyway.
-        """
+        are swallowed after the audit-safe decision call proceeds anyway."""
         if progress is None:
             return
         try:
             await progress(text)
         except Exception:  # noqa: BLE001 - progress is optional UX, not a gate
             pass
-
-    # -- entry points ---------------------------------------------------------- #
 
     async def handle_start(self, user_id: int, username: str) -> FlowResult:
         await self._touch(user_id, username)
@@ -498,8 +325,6 @@ class ResourceFlow:
         replies.append(ASK_PAT_START if stored is None else GREETING_READY)
         active = await self._active(user_id)
         if active is not None:
-            # flow-interrupt-rearm S1: /start during a flow offers the same
-            # two buttons the text guard uses, instead of free-text advice.
             replies.append(FLOW_INTERRUPTED)
             return FlowResult(tuple(replies), ResumeKB())
         return FlowResult(tuple(replies))
@@ -507,7 +332,7 @@ class ResourceFlow:
     async def handle_text(
         self, user_id: int, username: str, text: str, progress: ProgressSink | None = None
     ) -> FlowResult:
-        """One text update. ``progress`` is the L7-4 early-feedback sink."""
+        """One text update. ``progress`` is the early-feedback sink."""
         await self._touch(user_id, username)
         text = text or ""
         active = await self._active(user_id)
@@ -523,15 +348,11 @@ class ResourceFlow:
 
         state = active.state
         if state == "CONFIRMING" and pending_edits.get_marker(active.id) is not None:
-            # T4/S6.3 + flow-interrupt-rearm S4: the ✏️/🏷️ press already
-            # asked for this exact paste-back; it never goes through the gate.
             return await self._handle_confirming_text(user_id, active, text)
         if not self._step_takes_text(active) and not rearm.is_armed(user_id):
-            # S1 + S4: ONLY a text the current step cannot use asks Continue/
-            # Cancel first; the message itself is deliberately not processed.
             await self._log("flow_interrupted", user_id, active.id, detail=f"state={state}")
             return FlowResult((FLOW_INTERRUPTED,), ResumeKB())
-        rearm.disarm(user_id)  # S5: an armed button-step ask pays for one message
+        rearm.disarm(user_id)
         if state == "NEED_TOKEN":
             if looks_like_token(text):
                 return await self._capture_pat(user_id, text.strip(), resume=active, progress=progress)
@@ -543,19 +364,16 @@ class ResourceFlow:
             if await self._latest_decision_unreliable(active.id) and not (
                 manual_placement.is_marked(active.id)
             ):
-                # unreliable-decision-retry S2: the armed text adds context and re-classifies
                 return await self._retry_with_context(user_id, active, text, progress)
             return FlowResult((PLACEMENT_HINT,))
         if state == "AWAITING_ENTRY_INFO":
             return await self._interview_text(user_id, active, text)
         if state == "CONFIRMING":
-            # T4 (S6.3/S6.5): paste-back only while a field-edit marker is set.
             return await self._handle_confirming_text(user_id, active, text)
-        # Anything unexpected: buttons drive the next step.
         return FlowResult((CONFIRMING_HINT,))
 
     def _step_takes_text(self, resource: Any) -> bool:
-        """S4 (flow-interrupt-rearm, user-corrected): does the waiting step take text?
+        """Does the waiting step take text?
 
         Text-driven steps — the PAT, the summary, every interview answer, and the
         ✏️/🏷️ paste-back while its marker is set — consume the next message as
@@ -563,9 +381,7 @@ class ResourceFlow:
         them. Button-driven steps (the candidate/folder picker, the confirmation
         card without a pending edit, NEW) never guess: stray text there asks
         first. The unreliable-placement retry belongs to the second group: its
-        invite is armed by ``_no_candidates_step`` and ends on any button press
-        (unreliable-decision-retry + S5), so it flows through the arm gate.
-        """
+        invite is armed by ``_no_candidates_step`` and ends on any button press, so it flows through the arm gate."""
         state = resource.state
         if state in ("NEED_TOKEN", "NEED_SUMMARY"):
             return True
@@ -584,12 +400,10 @@ class ResourceFlow:
         message_id: int | None = None,
     ) -> FlowResult:
         """Button press. ``chat_id``/``message_id`` identify the card the press
-        came from (T4, S6.2); the renderer passes them from the Telegram
+        came from; the renderer passes them from the Telegram
         callback object itself — they are never derived from user text."""
         await self._touch(user_id, username)
         data = (data or "").strip()
-        # flow-interrupt-rearm S3: any press replaces the armed text answer
-        # ("keep" re-arms through handle_resume below).
         if isinstance(user_id, int) and not isinstance(user_id, bool):
             rearm.disarm(user_id)
         if data == "keep":
@@ -614,8 +428,6 @@ class ResourceFlow:
         if data == "❌":
             return await self.handle_cancel(user_id)
         if data in ("d", "t"):
-            # S6.2: field edits are only a CONFIRMING action; anywhere else the
-            # tail below audits them as the unknown callbacks they are.
             confirming = await self._active(user_id)
             if confirming is not None and confirming.state == "CONFIRMING":
                 mode = pending_edits.DESCRIPTION if data == "d" else pending_edits.TAGS
@@ -634,14 +446,13 @@ class ResourceFlow:
 
     @staticmethod
     def _parse_index(data: str) -> int | None:
-        """Strict canonical ``^\\d+$`` payload index (L11-a).
+        """Strict canonical ``^\\d+$`` payload index.
 
         ``c: 1``, ``c:+1``, ``c:1_0`` and ``c:١`` fail the ASCII-digit match;
         ``c:01`` matches the shape but is not how an index is ever spelled, so
         the round-trip check rejects it too. Anything that is not exactly what
         :mod:`app.bot.keyboards` produces is treated as hostile, not as a near
-        miss — the resolved value is always an in-range index, never a path.
-        """
+        miss — the resolved value is always an in-range index, never a path."""
         _, separator, raw = data.partition(":")
         if not separator or not _INDEX_RE.match(raw):
             return None
@@ -660,17 +471,14 @@ class ResourceFlow:
             return folders[index]
         return None
 
-    # -- resume (flow-interrupt-rearm, S2) ---------------------------------------- #
-
     async def handle_resume(self, user_id: int) -> FlowResult:
-        """▶️ Continue: re-send the current step's message (S2).
+        """▶️ Continue: re-send the current step's message.
 
         Text-driven steps need no arming — their next message is already the
-        answer (S4). Continue matters at button-driven steps: it re-shows the
+        answer. Continue matters at button-driven steps: it re-shows the
         picker or card, and for the unreliable-placement ask it re-arms the
-        context-retry invite through ``_no_candidates_step`` (S5). A stale
-        press (no active resource) is audited.
-        """
+        context-retry invite through ``_no_candidates_step``. A stale
+        press (no active resource) is audited."""
         resource = await self._active(user_id)
         if resource is None:
             await self._log("resume_stale", user_id)
@@ -679,7 +487,7 @@ class ResourceFlow:
         return await self._current_step_message(user_id, resource)
 
     async def _current_step_message(self, user_id: int, resource: Any) -> FlowResult:
-        """The message of the step the flow is waiting on, as first shown (S2)."""
+        """The message of the step the flow is waiting on, as first shown."""
         state = resource.state
         if state == "NEED_TOKEN":
             return FlowResult((PAT_STILL_NEEDED,))
@@ -687,14 +495,13 @@ class ResourceFlow:
             return FlowResult((ASK_SUMMARY,))
         if state == "NEW":
             if resource.context:
-                return await self.handle_decision(user_id)  # decision not run yet
+                return await self.handle_decision(user_id)
             return FlowResult((USAGE_HINT,))
         if state == "AWAITING_PLACEMENT":
             if (
                 await self._latest_decision_unreliable(resource.id)
                 and not manual_placement.is_marked(resource.id)
             ):
-                # unreliable-decision-retry S4: the step re-shown is the ask as first shown
                 return await self._no_candidates_step(user_id, resource.id)
             return await self.handle_more_folders(user_id)
         if state == "AWAITING_ENTRY_INFO":
@@ -719,8 +526,6 @@ class ResourceFlow:
             )
         return FlowResult((CONFIRMING_HINT,))
 
-    # -- PAT capture (S8) ------------------------------------------------------- #
-
     async def _capture_pat(
         self, user_id: int, token: str, resume: Any, progress: ProgressSink | None = None
     ) -> FlowResult:
@@ -741,10 +546,7 @@ class ResourceFlow:
             _transition(resume.id, resume.state, "NEED_SUMMARY")
             await self._log("summary_requested", user_id, resume.id)
             next_step = FlowResult((ASK_SUMMARY,))
-        # the PAT message is always deleted after capture (S8)
         return FlowResult(next_step.replies, next_step.keyboard, delete_message=True)
-
-    # -- intake ----------------------------------------------------------------- #
 
     async def _ingest_link(
         self, user_id: int, raw_url: str, progress: ProgressSink | None
@@ -758,8 +560,6 @@ class ResourceFlow:
         duplicate = await self._find_duplicate(url)
         if duplicate is not None:
             return await self._duplicate_result(user_id, duplicate)
-        # repo-mirror-dedup S1: DB rows first (they carry live-flow detail),
-        # then the repo mirror — links the repo has but the bot never saw.
         mirror = await find_mirror_link(self.deps.conn, canonical_url_key(url))
         if mirror is not None:
             await self._log("duplicate_mirror", user_id, detail=f"folder={mirror.folder}")
@@ -820,7 +620,7 @@ class ResourceFlow:
         self, user_id: int, resource: Any, token: str, progress: ProgressSink | None = None
     ) -> FlowResult:
         parsed = parse_repo_url(resource.url)
-        if parsed is None:  # kind said github but URL no longer parses: treat as other
+        if parsed is None:
             await set_resource_state(self.deps.conn, resource.id, "NEED_SUMMARY")
             _transition(resource.id, resource.state, "NEED_SUMMARY")
             return FlowResult((ASK_SUMMARY,))
@@ -829,7 +629,7 @@ class ResourceFlow:
         try:
             meta = await client.repo_meta(owner, repo)
             readme = await client.readme(owner, repo)
-        except FetchError as exc:  # L7-5: detail with status stays in the audit row
+        except FetchError as exc:
             safe = str(exc)
             await set_resource_state(self.deps.conn, resource.id, "NEED_SUMMARY", error=safe)
             _transition(resource.id, resource.state, "NEED_SUMMARY")
@@ -839,7 +639,7 @@ class ResourceFlow:
         await self._log("readme_fetched", user_id, resource.id, detail=f"repo={owner}/{repo}")
         logger.info("milestone=readme_fetched res=%s repo=%s/%s", resource.id, owner, repo)
         description = sanitize_line(str(meta.get("description") or ""), _DESC_MAX)
-        excerpt = readme[:README_EXCERPT_CHARS]  # L7-2
+        excerpt = readme[:README_EXCERPT_CHARS]
         context = "\n\n".join(part for part in (description, excerpt) if part)
         await set_resource_state(self.deps.conn, resource.id, "NEW", context=context)
         _transition(resource.id, resource.state, "NEW")
@@ -855,8 +655,6 @@ class ResourceFlow:
         await self._log("summary_stored", user_id, resource.id)
         return await self.handle_decision(user_id, progress)
 
-    # -- decision (S5, S7) ------------------------------------------------------- #
-
     async def handle_decision(
         self, user_id: int, progress: ProgressSink | None = None
     ) -> FlowResult:
@@ -866,7 +664,7 @@ class ResourceFlow:
         excerpt = f"{resource.url}\n\n{resource.context}"
         settings = self.deps.settings
         client = self.deps.make_decision()
-        await self._emit(progress, ANALYZING)  # L7-4: announced before the slow retries
+        await self._emit(progress, ANALYZING)
         try:
             result = await client.classify(
                 ticket_id=f"T-{resource.id}",
@@ -875,12 +673,8 @@ class ResourceFlow:
                 threshold=settings.confidence_threshold,
                 max_candidates=settings.max_candidates_shown,
             )
-        except DecisionError as exc:  # L7-5: status/message audited, never shown raw
+        except DecisionError as exc:
             safe = str(exc)
-            # unreliable-decision-retry: a hard failure means the model returned
-            # no value either — keep the flow alive on the folders + context
-            # retry step instead of the dead FAILED end. The detail stays in
-            # the resources row, the audit trail and the empty decision row.
             await record_decision(
                 self.deps.conn,
                 resource.id,
@@ -926,10 +720,7 @@ class ResourceFlow:
         )
         replies = [f"Done thinking — {len(result.candidates)} folder(s) cleared the bar."]
         if not result.candidates:
-            # unreliable-decision-retry: the model returned no usable value —
-            # show every folder and invite a text message as extra context.
             return await self._no_candidates_step(user_id, resource.id)
-        # Option B on the decision card: readable numbered caption, number buttons.
         replies.append(
             folder_picker.candidates_list_html(
                 result.candidates, sorted(settings.categories)
@@ -942,16 +733,14 @@ class ResourceFlow:
         )
 
     async def _no_candidates_step(self, user_id: int, resource_id: int) -> FlowResult:
-        """The ask shown when the model produced no candidate (unreliable-decision-retry S1).
+        """The ask shown when the model produced no candidate.
 
         The message and the choice keyboard only — no folders yet: 🛠️ Manual
-        classify opens the full picker (S6), ❌ Cancel drops the resource. The
+        classify opens the full picker, ❌ Cancel drops the resource. The
         user is armed so exactly the next text update re-runs the classification
-        with extra context, any button press ends the invite
-        (flow-interrupt-rearm S5), and ▶️ Continue re-offers this step armed
+        with extra context, any button press ends the invite, and ▶️ Continue re-offers this step armed
         again — unless manual placement was already chosen, which stays
-        button-driven on the plain picker.
-        """
+        button-driven on the plain picker."""
         if not manual_placement.is_marked(resource_id):
             rearm.arm(user_id)
         return FlowResult((DECISION_UNRELIABLE_USER,), keyboard=ManualKB())
@@ -969,28 +758,25 @@ class ResourceFlow:
     async def _retry_with_context(
         self, user_id: int, resource: Any, text: str, progress: ProgressSink | None = None
     ) -> FlowResult:
-        """unreliable-decision-retry S2: the armed text is extra context, not a command.
+        """The armed text is extra context, not a command.
 
         The line is appended to the stored context (capped, newest kept) and
         the classification re-runs through :meth:`handle_decision`; if it is
         still unreliable the same step is re-offered, armed again for another
-        try. Empty text re-asks without spending a model call.
-        """
+        try. Empty text re-asks without spending a model call."""
         extra = sanitize_line(text, SUMMARY_MAX_CHARS)
         if not extra:
             return await self._no_candidates_step(user_id, resource.id)
         base = resource.context or ""
         combined = f"{base}\n\n{extra}" if base else extra
         if len(combined) > _MAX_CONTEXT_CHARS:
-            combined = combined[-_MAX_CONTEXT_CHARS:]  # keep the newest context
+            combined = combined[-_MAX_CONTEXT_CHARS:]
         await set_resource_state(self.deps.conn, resource.id, "NEW", context=combined)
         _transition(resource.id, resource.state, "NEW")
         await self._log(
             "context_retry", user_id, resource.id, detail=f"chars={len(extra)}"
         )
         return await self.handle_decision(user_id, progress)
-
-    # -- placement ---------------------------------------------------------------- #
 
     async def handle_more_folders(self, user_id: int, page: int = 0) -> FlowResult:
         """Numbered picker: full readable paths in an HTML caption, numbers as buttons."""
@@ -1003,15 +789,14 @@ class ResourceFlow:
         )
 
     async def handle_manual_classify(self, user_id: int) -> FlowResult:
-        """unreliable-decision-retry S6: the user takes folder placement over.
+        """The user takes folder placement over.
 
         Marks the resource (process-local, app/bot/manual_placement.py) so the
         text-context invite is ended: later text is a stray message the
         flow-interrupt gate guards, never classification context. The full
         numbered picker opens here for the first time, and the press itself
         already disarmed any armed ask (handle_callback disarms every press).
-        Valid only while placement is pending.
-        """
+        Valid only while placement is pending."""
         resource = await self._active(user_id)
         if resource is None:
             return FlowResult((NOTHING_PENDING,))
@@ -1037,7 +822,7 @@ class ResourceFlow:
         except ValueError:
             await self._log("placement_rejected", user_id, resource.id, detail=f"folder={folder!r}")
             return FlowResult((UNKNOWN_FOLDER,))
-        manual_placement.clear(resource.id)  # S6: placement settled, mark no longer needed
+        manual_placement.clear(resource.id)
 
         needs_admin = await self._latest_needs_admin(resource.id)
         iv: dict[str, Any] = {}
@@ -1060,14 +845,14 @@ class ResourceFlow:
         await self._log("placement_chosen", user_id, resource.id, detail=f"folder={folder}")
 
         replies: list[str] = []
-        if needs_admin is not None and needs_admin >= NEEDS_ADMIN_THRESHOLD:  # S7
+        if needs_admin is not None and needs_admin >= NEEDS_ADMIN_THRESHOLD:
             replies.append(NEEDS_ADMIN_NOTE)
         replies.append(PLACED.format(folder=folder))
         next_step = await self._advance(user_id, resource.id)
         return FlowResult((*replies, *next_step.replies), next_step.keyboard)
 
     async def _latest_needs_admin(self, resource_id: int) -> float | None:
-        """needs_admin of the newest decision row, for the S7 note across steps."""
+        """The needs_admin value of the newest decision row, shared across steps."""
         async with self.deps.conn.execute(
             "SELECT needs_admin FROM decisions WHERE resource_id = ? ORDER BY id DESC LIMIT 1",
             (resource_id,),
@@ -1075,18 +860,6 @@ class ResourceFlow:
             row = await cursor.fetchone()
         return None if row is None else row["needs_admin"]
 
-    # -- entry interview (S14, L7-1) ---------------------------------------------- #
-
-    @staticmethod
-    def _derive_step(resource: Any, iv: dict[str, Any]) -> str:
-        if not resource.folder:
-            return "folder"
-        if not resource.context:
-            return "context"
-        for field_name in IV_FIELDS:
-            if field_name not in iv:
-                return field_name
-        return "preview"
 
     _QUESTIONS: dict[str, tuple[str, Any]] = {
         "name": (ASK_NAME, None),
@@ -1097,324 +870,25 @@ class ResourceFlow:
         "context": (ASK_CONTEXT, None),
     }
 
-    async def _interview_text(self, user_id: int, resource: Any, text: str) -> FlowResult:
-        iv = _load_iv(resource.entry_line)
-        step = self._derive_step(resource, iv)
-        raw = (text or "").strip()
 
-        if step == "folder":
-            return FlowResult((PLACEMENT_HINT,))
-        if step == "context":
-            value = sanitize_line(raw, SUMMARY_MAX_CHARS)
-            if not value:
-                return FlowResult((ASK_CONTEXT,))
-            await set_resource_state(self.deps.conn, resource.id, "AWAITING_ENTRY_INFO", context=value)
-            return await self._advance(user_id, resource.id)
-        if step == "name":
-            return await self._answer_line(user_id, resource, iv, "name", raw, _NAME_MAX)
-        if step == "description":
-            return await self._answer_line(user_id, resource, iv, "description", raw, _DESC_MAX)
-        if step == "type":
-            value = raw.lower()
-            if value not in ENTRY_TYPES:
-                await self._log("entry_rejected", user_id, resource.id, detail="field=type")
-                return FlowResult((INVALID_TYPE,), TypeKB())
-            return await self._answer_field(user_id, resource, iv, "type", value)
-        if step == "platforms":
-            tokens = [t for t in _TOKEN_SPLIT_RE.split(raw) if t]
-            if not tokens or tokens == ["none"]:
-                return await self._answer_field(user_id, resource, iv, "platforms", [])
-            cleaned: list[str] = []
-            for token in tokens:
-                tag = sanitize_line(token, 40)
-                if not tag or any(ch in _PLATFORM_UNSAFE for ch in tag):
-                    await self._log("entry_rejected", user_id, resource.id, detail="field=platforms")
-                    return FlowResult((ASK_PLATFORMS,))
-                cleaned.append(tag.lower())
-            return await self._answer_field(user_id, resource, iv, "platforms", cleaned)
-        return await self._build_preview(user_id, resource)
 
-    async def _answer_line(
-        self, user_id: int, resource: Any, iv: dict[str, Any], field_name: str, raw: str, limit: int
-    ) -> FlowResult:
-        """L7-1 bullet-injection guard: sanitize, then reject brackets/backticks."""
-        value = sanitize_line(raw, limit)
-        if not value or any(ch in value for ch in ("[", "]", "`")):
-            await self._log("entry_rejected", user_id, resource.id, detail=f"field={field_name}")
-            return FlowResult((INVALID_FIELD.format(label=field_name.capitalize()),))
-        return await self._answer_field(user_id, resource, iv, field_name, value)
 
-    async def _answer_field(
-        self, user_id: int, resource: Any, iv: dict[str, Any], field_name: str, value: Any
-    ) -> FlowResult:
-        iv[field_name] = value
-        await set_resource_state(
-            self.deps.conn, resource.id, "AWAITING_ENTRY_INFO", entry_line=_dump_iv(iv)
-        )
-        await self._log("entry_stored", user_id, resource.id, detail=f"field={field_name}")
-        return await self._advance(user_id, resource.id)
 
-    async def _advance(self, user_id: int, resource_id: int) -> FlowResult:
-        resource = await get_resource(self.deps.conn, resource_id)
-        iv = _load_iv(resource.entry_line)
-        step = self._derive_step(resource, iv)
-        if step == "preview":
-            return await self._build_preview(user_id, resource)
-        text, keyboard = self._QUESTIONS[step]
-        return FlowResult((text,), keyboard)
 
-    async def _build_preview(self, user_id: int, resource: Any) -> FlowResult:
-        iv = _load_iv(resource.entry_line)
-        try:
-            line = build_entry_line(
-                iv.get("name", ""),
-                resource.url,
-                iv.get("description", ""),
-                iv.get("type", ""),
-                list(iv.get("platforms", [])),
-            )
-        except ValueError as exc:  # defensive: field names only, no echo of values
-            await self._log("entry_build_failed", user_id, resource.id, detail=str(exc))
-            iv = {k: v for k, v in iv.items() if k == "platforms"}
-            await set_resource_state(
-                self.deps.conn, resource.id, "AWAITING_ENTRY_INFO", entry_line=_dump_iv(iv)
-            )
-            _transition(resource.id, resource.state, "AWAITING_ENTRY_INFO")
-            return await self._advance(user_id, resource.id)
-        await set_resource_state(self.deps.conn, resource.id, "CONFIRMING", entry_line=line)
-        _transition(resource.id, resource.state, "CONFIRMING")
-        await self._log("entry_preview", user_id, resource.id, detail=f"folder={resource.folder}")
-        return FlowResult((f"{PREVIEW}\n{line}",), keyboard=ConfirmKB(resource.folder))
 
-    # -- field edits while CONFIRMING (T4; S6.2-S6.6) ------------------------------ #
 
-    def _entry_parts(
-        self, resource: Any
-    ) -> tuple[Any, str, list[str]] | None:
-        """Rebuild pieces of the stored bullet: parsed fields + type/tags.
 
-        ``parse_entry_line`` stays as internal plumbing (L9): it reads the
-        current description and tags back out of the canonical ``entry_line``.
-        LEGACY cost words inside the tag run are dropped here, so any rebuild
-        emits a cost-free bullet (S4). Returns None when the stored line
-        cannot support an edit loop (a hand-corrupted row, never a
-        builder-produced one).
-        """
-        try:
-            parsed = parse_entry_line(resource.entry_line)
-        except EntryLineError:
-            return None
-        # L5 rebuild mapping: tags[0] = "type:x", the rest are platform tags.
-        head = parsed.tags[0] if parsed.tags else ""
-        kind, sep, type_tag = head.partition(":")
-        if not sep or kind != "type" or type_tag not in ENTRY_TYPES:
-            return None
-        platform_tags = [t for t in parsed.tags[1:] if t not in LEGACY_COST_TAGS]
-        return parsed, type_tag, platform_tags
 
-    @staticmethod
-    def _edit_prompt(mode: str, parsed: Any) -> tuple[str, str]:
-        """Instruction + copyable code block of the CURRENT field value."""
-        if mode == pending_edits.TAGS:
-            rendered = " ".join(f"`{tag}`" for tag in parsed.tags)
-            return (EDIT_TAGS_ASK, _code_block(rendered))
-        return (EDIT_DESC_ASK, _code_block(parsed.description))
 
-    async def _start_field_edit(
-        self,
-        user_id: int,
-        resource: Any,
-        mode: str,
-        chat_id: int | None,
-        message_id: int | None,
-    ) -> FlowResult:
-        """S6.2: answer a "d"/"t" press as NEW messages and arm the paste-back."""
-        parts = self._entry_parts(resource)
-        if parts is None:
-            await self._log(
-                "entry_edit_rejected", user_id, resource.id, detail="reason=unrebuildable-entry"
-            )
-            return FlowResult((EDIT_UNAVAILABLE,), new_message=True, parse_mode=PARSE_HTML)
-        parsed = parts[0]
-        pending_edits.set_marker(resource.id, mode, chat_id, message_id)
-        await self._log("entry_edit_requested", user_id, resource.id, detail=f"field={mode}")
-        return FlowResult(
-            self._edit_prompt(mode, parsed), new_message=True, parse_mode=PARSE_HTML
-        )
 
-    def _rebuild_from_description(
-        self, resource: Any, parsed: Any, type_tag: str, platform_tags: list[str], text: str
-    ) -> tuple[str | None, str | None]:
-        """S6.3: the pasted line is a DESCRIPTION only (interview guard reused)."""
-        stripped = (text or "").strip()
-        if "\n" in stripped or "\r" in stripped:
-            return None, EDIT_DESC_ONE_LINE
-        value = sanitize_line(stripped, _DESC_MAX + 1)  # +1: keep over-cap detectable
-        if not value:
-            return None, EDIT_DESC_EMPTY
-        if any(ch in value for ch in ("[", "]", "`")):  # L7-1 guard, same wording
-            return None, INVALID_FIELD.format(label="Description")
-        if len(value) > _DESC_MAX:
-            return None, EDIT_DESC_TOO_LONG
-        try:
-            new_line = build_entry_line(
-                parsed.name, resource.url, value, type_tag, platform_tags
-            )
-        except ValueError as exc:  # defensive: validators above already applied the caps
-            return None, _html_escape(sanitize_line(str(exc), EDIT_RETRY_DETAIL_MAX))
-        return new_line, None
-
-    def _rebuild_from_tags(
-        self, resource: Any, parsed: Any, text: str
-    ) -> tuple[str | None, str | None]:
-        """S6.4: whitespace tokens; backticks optional; existing tag rules via build."""
-        tokens = (text or "").replace("`", " ").split()
-        if not tokens:
-            return None, EDIT_NO_TYPE_TAG
-        kind, sep, type_tag = tokens[0].partition(":")
-        if not sep or kind != "type":
-            return None, EDIT_NO_TYPE_TAG
-        if type_tag not in ENTRY_TYPES:
-            return None, EDIT_TYPE_VALUE
-        rest = tokens[1:]
-        if any(":" in tag for tag in rest):  # only the head may be a `type:` tag
-            return None, EDIT_TAGS_COLON
-        try:
-            new_line = build_entry_line(
-                parsed.name, resource.url, parsed.description, type_tag, rest
-            )
-        except ValueError as exc:  # _normalize_platform_tags messages name the tag
-            return None, _html_escape(sanitize_line(str(exc), EDIT_RETRY_DETAIL_MAX))
-        return new_line, None
-
-    async def _handle_confirming_text(self, user_id: int, resource: Any, text: str) -> FlowResult:
-        """T4 (S6.3-S6.6): the pending-edit paste pipeline.
-
-        CONFIRMING text edits anything only while a "d"/"t" marker is set —
-        without one it falls back to ``CONFIRMING_HINT`` (the whole-bullet
-        paste interception is removed, L9). The paste rebuilds the bullet
-        through ``build_entry_line`` (caps stay single-sourced), keeping every
-        field the pressed button does not edit, persists it, re-sends exactly
-        the confirmation ``_build_preview`` produces and hands the previous
-        card's tracked ids to the renderer for best-effort deletion. One
-        rejection answers one user-safe error plus the re-offered prompt;
-        state, bullet and the ✅/❌ bubble stay untouched.
-        """
-        marker = pending_edits.get_marker(resource.id)
-        if marker is None:
-            return FlowResult((CONFIRMING_HINT,))
-        parts = self._entry_parts(resource)
-        if parts is None:
-            pending_edits.clear_marker(resource.id)
-            await self._log(
-                "entry_edit_rejected", user_id, resource.id, detail="reason=unrebuildable-entry"
-            )
-            return FlowResult((EDIT_UNAVAILABLE,), parse_mode=PARSE_HTML)
-        parsed, type_tag, platform_tags = parts
-        if marker.mode == pending_edits.TAGS:
-            new_line, error = self._rebuild_from_tags(resource, parsed, text)
-        else:
-            new_line, error = self._rebuild_from_description(
-                resource, parsed, type_tag, platform_tags, text
-            )
-        if error is not None:
-            await self._log(
-                "entry_edit_rejected", user_id, resource.id, detail=f"field={marker.mode}"
-            )
-            return FlowResult(
-                (error, *self._edit_prompt(marker.mode, parsed)), parse_mode=PARSE_HTML
-            )
-
-        await set_resource_state(
-            self.deps.conn, resource.id, "CONFIRMING", entry_line=new_line
-        )
-        await self._log(
-            "entry_edited", user_id, resource.id,
-            detail=f"field={marker.mode}; folder={resource.folder}",
-        )
-        pending_edits.clear_marker(resource.id)
-        deletes: tuple[tuple[int, int], ...] = ()
-        if marker.chat_id is not None and marker.message_id is not None:
-            deletes = ((marker.chat_id, marker.message_id),)
-        return FlowResult(
-            (f"{PREVIEW}\n{new_line}",),
-            keyboard=ConfirmKB(resource.folder),
-            delete_outgoing=deletes,
-        )
-
-    # -- confirm / commit (S13, S16) ----------------------------------------------- #
-
-    async def handle_confirm(self, user_id: int) -> FlowResult:
-        resource = await self._active(user_id)
-        if resource is None:
-            return FlowResult((NOTHING_PENDING,))
-        pending_edits.clear_marker(resource.id)  # S6.2: ✅ ends any pending edit
-        if resource.state != "CONFIRMING":
-            return FlowResult((CONFIRMING_HINT,))
-        stored = await get_github_token(self.deps.conn, user_id)
-        if stored is None:
-            await self._log("confirm_missing_pat", user_id, resource.id)
-            return FlowResult((NEED_TOKEN_FOR_LINK,))
-        try:
-            token = decrypt_pat(self.deps.settings, stored.enc_token)
-        except ValueError:
-            await self._log("pat_invalid", user_id, resource.id)
-            return FlowResult((DECRYPT_FAILED,))
-
-        # L11-b: the traversal gate is the last word here. A folder that is not
-        # a configured category (tampered/stale DB row) must never reach GitHub;
-        # the resource stays CONFIRMING so /cancel works and the operator keeps
-        # the audit trail instead of an unhandled traceback in the log.
-        try:
-            path = self.deps.settings.readme_path(resource.folder)
-        except ValueError:
-            await self._log(
-                "commit_rejected",
-                user_id,
-                resource.id,
-                detail=f"folder={sanitize_line(str(resource.folder or ''))}",
-            )
-            return FlowResult((COMMIT_REJECTED,))
-        client = self.deps.make_github(token)
-        try:
-            commit_url, status = await client.commit_entry(
-                path,
-                resource.entry_line,
-                self.deps.settings.target_branch,
-                leaf_title_from_path(path),
-                _first_paragraph(resource.context),
-            )
-        except DuplicateError as exc:
-            logger.warning("commit_duplicate res=%s: %s", resource.id, str(exc))
-            await self._log("commit_duplicate", user_id, resource.id, detail=str(exc))
-            return FlowResult((str(exc),))
-        except FetchError as exc:  # L7-5: audited verbatim, reminded publicly
-            logger.warning("commit_failed res=%s: %s", resource.id, str(exc))
-            await self._log("commit_failed", user_id, resource.id, detail=str(exc))
-            return FlowResult((str(exc) + COMMIT_PUBLIC_REMINDER,))
-        await set_resource_state(self.deps.conn, resource.id, "COMMITTED", commit_url=commit_url)
-        _transition(resource.id, resource.state, "COMMITTED")
-        # S6: the mirror learns the bot's own write immediately, so the next
-        # intake is covered without waiting for the next sync tick.
-        await upsert_mirror_link(
-            self.deps.conn, canonical_url_key(resource.url), resource.url, resource.folder
-        )
-        logger.info("milestone=commit_done res=%s url=%s", resource.id, commit_url)
-        await self._log("committed", user_id, resource.id, detail=commit_url)
-        return FlowResult(
-            (
-                COMMITTED_REPLY.format(status=status, url=commit_url),
-                f"Everything is on file in the audit trail (resource #{resource.id}).",
-            )
-        )
 
     async def handle_cancel(self, user_id: int) -> FlowResult:
         resource = await self._active(user_id)
         if resource is None:
             return FlowResult((NOTHING_PENDING,))
-        pending_edits.clear_marker(resource.id)  # S6.2: ❌ / /cancel end the edit loop
-        rearm.disarm(user_id)  # flow-interrupt-rearm: cancel ends the armed ask too
-        manual_placement.clear(resource.id)  # unreliable-decision-retry S6: cancel frees the mark
+        pending_edits.clear_marker(resource.id)
+        rearm.disarm(user_id)
+        manual_placement.clear(resource.id)
         await set_resource_state(self.deps.conn, resource.id, "CANCELLED")
         _transition(resource.id, resource.state, "CANCELLED")
         await self._log("cancelled", user_id, resource.id, detail=f"was={resource.state}")
@@ -1426,61 +900,11 @@ class ResourceFlow:
         await self._log("pat_forgotten", user_id)
         return FlowResult((FORGOTTEN,))
 
-    async def handle_stats(self, user_id: int, username: str | None) -> FlowResult:
-        """Two read-only boards, one message each: committed links and top tags.
 
-        Plain text (no parse mode) — usernames and tags arrive untrusted, and
-        the bot-wide default of none keeps them inert.
-        """
-        await self._touch(user_id, username)
-        await self._log("stats", user_id)
-        rows = await get_upload_leaderboard(self.deps.conn)
-        committed = await list_resources_by_states(self.deps.conn, ("COMMITTED",))
-        return FlowResult((self._links_board(rows, user_id), self._tags_board(committed)))
 
-    @staticmethod
-    def _links_board(rows: list[Any], user_id: int) -> str:
-        if not rows:
-            return STATS_EMPTY
-        lines = ["🏆 Committed links — per curator"]
-        for rank, row in enumerate(rows[:_STATS_DISPLAY_LIMIT], start=1):
-            name = f"@{row.username}" if row.username else "(no username)"
-            lines.append(f"{_medal(rank)} {name} — {_links_noun(row.total)}")
-        my_row = next((r for r in rows if r.tg_user_id == user_id), None)
-        if my_row is None:
-            lines.append(STATS_NO_COMMITS)
-        elif len(rows) > _STATS_DISPLAY_LIMIT:
-            rank = next(i for i, r in enumerate(rows, start=1) if r.tg_user_id == user_id)
-            lines.append(f"You are #{rank} — {_links_noun(my_row.total)}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _tags_board(committed: list[Any]) -> str:
-        """Tag counts across COMMITTED entries, reusing the bullet parser.
-
-        Tags are casefolded (one row per tag however it was spelled); ties
-        break alphabetically so the order is stable. A tampered entry_line is
-        skipped, never counted.
-        """
-        counts: dict[str, int] = {}
-        for resource in committed:
-            try:
-                parsed = parse_entry_line(resource.entry_line)
-            except EntryLineError:
-                continue
-            for tag in parsed.tags:
-                key = tag.casefold()
-                counts[key] = counts.get(key, 0) + 1
-        if not counts:
-            return STATS_TAGS_EMPTY
-        lines = ["🏷️ Top tags — across committed links"]
-        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        for rank, (tag, n) in enumerate(ranked[:_STATS_DISPLAY_LIMIT], start=1):
-            lines.append(f"{_medal(rank)} {tag} — {_links_noun(n)}")
-        return "\n".join(lines)
 
     async def handle_unauthorized(self, user_id: int | None, username: str | None) -> FlowResult:
-        """S9: silent to the chat. The only user-facing effect is none; an audit
+        """Silent to the chat. The only user-facing effect is none; an audit
         row is written and an operator-facing WARNING records the ignored update
         (id + username only, no content)."""
         logger.warning("unauthorized_ignored res=unknown id=%s user=%s", user_id, username or "")

@@ -1,8 +1,7 @@
 """Daily Hackpot category sync — the shared contract for the CLI and the bot.
 
-Moved verbatim from ``scripts/sync_categories.py`` (the script is now a thin
-CLI over this module, so its stdout and .env rewrite are unchanged) and adds
-the in-process pieces the running bot uses:
+The CLI is a thin wrapper over this module, so its stdout and .env rewrite
+match the original script. The in-process pieces the running bot uses are:
 
 * :func:`apply_refresh` — fetch the live leaf map, validate it with the same
   contract as ``Settings._check_categories`` and hot-swap
@@ -13,16 +12,15 @@ the in-process pieces the running bot uses:
   (default ``00:00``, ``CATEGORY_SYNC_TIME``) and repeats the refresh; a
   failed sync keeps the previous categories and is retried at the next slot.
 
-The repo is the source of truth (same rules as the script): leaf README intro
-> existing criteria > placeholder, removed leaves dropped. When a writable
-``.env`` exists (local runs), the fresh map is persisted there with a rolling
-``.env.bak``; under docker compose the container has no .env, and the
-in-memory swap alone keeps the running bot current.
+The repo is the source of truth: leaf README intro > existing criteria >
+placeholder, removed leaves dropped. When a writable ``.env`` exists (local
+runs), the fresh map is persisted there with a rolling ``.env.bak``; under
+docker compose the container has no .env, and the in-memory swap alone keeps
+the running bot current.
 
 ``seconds_until_next`` uses naive local wall-clock time: around a DST change
 the wake-up may land up to an hour early/late on that single day, corrected
-by the next recomputation.
-"""
+by the next recomputation."""
 
 from __future__ import annotations
 
@@ -30,24 +28,19 @@ import asyncio
 import json
 import re
 import shutil
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote
 
-import httpx
-
 from app.config import LEAF_PATH_RE, MAX_CATEGORIES
 from app.logging_config import get_logger
+from app.services.github_http import RAW_ROOT, GitHubHttpError, get_many, get_raw, get_tree
 
 logger = get_logger(__name__)
 
-API_ROOT = "https://api.github.com"
-RAW_ROOT = "https://raw.githubusercontent.com"
 PREFIX = "CATEGORIES_JSON="
 
-# A placeholder that is a sentence, never empty (Settings rejects blank criteria).
 _PLACEHOLDER = "Tools and resources related to {sub} ({domain}) — refine this description."
 
 
@@ -210,51 +203,38 @@ def fetch_readme_descriptions(
     """
     if not leaves:
         return {}
-    headers = {"User-Agent": "hackpot-bot-sync-categories"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    urls = {leaf: readme_raw_url(repo, branch, leaf) for leaf in leaves}
+    texts = get_many(
+        list(urls.values()),
+        token,
+        lambda url, tok: get_raw(url, tok, user_agent="hackpot-bot-sync-categories"),
+        workers=workers,
+    )
     out: dict[str, str] = {}
-
-    def one(leaf: str) -> tuple[str, str]:
-        try:
-            resp = httpx.get(readme_raw_url(repo, branch, leaf), headers=headers,
-                             timeout=30.0, follow_redirects=True)
-        except httpx.HTTPError:
-            return leaf, ""
-        if resp.status_code != 200:
-            return leaf, ""
-        return leaf, extract_readme_description(resp.text)
-
-    with ThreadPoolExecutor(max_workers=min(workers, len(leaves))) as pool:
-        for leaf, description in pool.map(one, leaves):
-            if description:
-                out[leaf] = description
+    for leaf, url in urls.items():
+        text = texts.get(url)
+        if not text:
+            continue
+        description = extract_readme_description(text)
+        if description:
+            out[leaf] = description
     return out
 
 
 def fetch_tree(repo: str, branch: str, token: str | None) -> list[dict[str, Any]]:
     """One recursive git/trees call; raises SystemExit with a safe message."""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "hackpot-bot-sync-categories",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    url = f"{API_ROOT}/repos/{repo}/git/trees/{quote(branch, safe='')}"
     try:
-        resp = httpx.get(url, headers=headers, params={"recursive": "1"}, timeout=30.0, follow_redirects=True)
-    except httpx.HTTPError as exc:
-        raise SystemExit(f"GitHub request failed: {exc}") from exc
-    if resp.status_code in (403, 429) and not token:
-        raise SystemExit(
-            "GitHub rate limit hit (60 req/h unauthenticated) — set GITHUB_TOKEN and retry."
-        )
-    if resp.status_code == 404:
-        raise SystemExit(f"not found (404): repo {repo!r} or branch {branch!r}")
-    if resp.status_code != 200:
-        raise SystemExit(f"GitHub returned HTTP {resp.status_code}: {resp.text[:200]}")
-    data = resp.json()
+        data = get_tree(repo, branch, token, user_agent="hackpot-bot-sync-categories")
+    except GitHubHttpError as exc:
+        if exc.status in (403, 429) and not token:
+            raise SystemExit(
+                "GitHub rate limit hit (60 req/h unauthenticated) — set GITHUB_TOKEN and retry."
+            ) from exc
+        if exc.status == 404:
+            raise SystemExit(f"not found (404): repo {repo!r} or branch {branch!r}") from exc
+        if exc.status is not None:
+            raise SystemExit(f"GitHub returned HTTP {exc.status}: {exc.body[:200]}") from exc
+        raise SystemExit(str(exc)) from exc
     if data.get("truncated"):
         raise SystemExit("GitHub truncated the tree (>100k entries) — cannot trust the leaf list")
     return data.get("tree", [])
@@ -283,9 +263,6 @@ def sync_once(
     tree = fetch_tree(repo, branch, token)
     leaves, missing = extract_leaf_paths(tree, require_readme=require_readme)
 
-    # By default the repo is the source of truth: every leaf's README intro is
-    # fetched. keep-curated only fetches leaves that are blank/placeholder;
-    # readmes=False skips fetches entirely.
     descriptions: dict[str, str] = {}
     if readmes:
         needs = [
@@ -331,8 +308,7 @@ def apply_refresh(
         raise RuntimeError(f"category sync refused: {exc}") from None
 
     if categories != dict(settings.categories):
-        settings.categories = categories  # atomic reference swap; handlers
-        # read the whole map per request, so no torn state is possible.
+        settings.categories = categories
         logger.info("categories refreshed: %d live leaf(s)", len(categories))
     else:
         logger.info("categories unchanged (%d leaf(s))", len(categories))
@@ -381,7 +357,6 @@ async def category_refresh_loop(
 
     async def _run_once() -> None:
         try:
-            # fetch_* are sync httpx calls; run them outside the event loop.
             await to_thread(refresh, settings)
         except asyncio.CancelledError:
             raise

@@ -1,4 +1,4 @@
-"""Repo mirror sync (repo-mirror-dedup T2; Specs S2, S3, S4, S7).
+"""Repo mirror sync.
 
 The target repo is the source of truth for what is already published: humans
 edit leaf READMEs outside the bot, and its links must block intake anyway.
@@ -7,14 +7,14 @@ This service indexes every URL listed as a markdown bullet inside any
 the ``mirror_links`` tables, incrementally:
 
 * one recursive ``git/trees`` call per run gives the branch-tip tree sha plus
-  every README blob sha (S3: a quiet repo costs exactly one API call);
+  every README blob sha;
 * if the tree sha equals ``mirror_state.head_sha`` the repo did not move and
   the run short-circuits without any fetch;
 * otherwise only READMEs whose blob sha changed are refetched, via the raw
   host (no API rate limit — same pattern as ``category_sync``);
 * READMEs that vanished prune their rows; URLs that stay are refreshed.
 
-Failure policy (S7): a README fetch that fails (non-200/transport error)
+Failure policy: a README fetch that fails (non-200/transport error)
 keeps that folder's previous rows and does NOT store the new blob sha, and
 ``mirror_state`` only pins to a head sha after a fully clean pass — so the
 next tick re-derives exactly the failed files and retries them. A tree-call
@@ -26,22 +26,17 @@ canonicalization shared by intake and commit-time dedup; nothing here may
 invent a second normalization.
 
 :func:`mirror_sync_loop` is the long-lived task: one sync **immediately at
-startup** (S4 — this also recovers a deleted DB or an offline gap, because
-``mirror_state`` is then absent/stale), then one per
-``settings.mirror_sync_interval_hours`` (S3, default hourly). The loop awaits
+startup**, then one per
+``settings.mirror_sync_interval_hours``. The loop awaits
 each pass sequentially, so passes can never overlap, and every error is
-logged and retried at the next tick.
-"""
+logged and retried at the next tick."""
 
 from __future__ import annotations
 
 import asyncio
 import re
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 from urllib.parse import quote
-
-import httpx
 
 from app.db.repository import (
     delete_mirror_file,
@@ -52,25 +47,20 @@ from app.db.repository import (
     set_mirror_state,
 )
 from app.logging_config import get_logger
-from app.services.category_sync import API_ROOT, RAW_ROOT
 from app.services.github import canonical_url_key
+from app.services.github_http import RAW_ROOT, GitHubHttpError, get_many, get_raw, get_tree
 
 logger = get_logger(__name__)
 
 USER_AGENT = "hackpot-bot-repo-mirror"
 README_SUFFIX = "/README.md"
 
-# GitHub's recursive tree for a curated docs repo is never expected anywhere
-# near the 100k-entry truncation limit; if it ever is, refusing beats indexing
-# a knowingly incomplete mirror (same rule category_sync applies to leaves).
 _FETCH_WORKERS = 8
 
 
 class MirrorSyncError(RuntimeError):
-    """The mirror could not observe the repo state this pass (S7)."""
+    """The mirror could not observe the repo state this pass."""
 
-
-# --------------------------------------------------------------- extraction #
 
 _BULLET_RE = re.compile(r"^\s*[-*+]\s")
 _MD_LINK_RE = re.compile(r"\[[^\]]*\]\((https?://[^\s)]+)\)")
@@ -111,9 +101,6 @@ def extract_readme_links(text: str) -> list[tuple[str, str]]:
     return links
 
 
-# ------------------------------------------------------------------ network #
-
-
 def folder_for_readme(path: str) -> str | None:
     """Mirror folder key for a blob path: README.md → its directory ('' = root).
 
@@ -143,38 +130,16 @@ def parse_tree_response(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]]
 
 def fetch_tree_with_sha(repo: str, branch: str, token: str | None) -> tuple[str, list[dict[str, Any]]]:
     """One recursive git/trees call → (tree sha, entries). Raises MirrorSyncError."""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": USER_AGENT,
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    url = f"{API_ROOT}/repos/{repo}/git/trees/{quote(branch, safe='')}"
     try:
-        resp = httpx.get(url, headers=headers, params={"recursive": "1"},
-                         timeout=30.0, follow_redirects=True)
-    except httpx.HTTPError as exc:
-        raise MirrorSyncError(f"GitHub tree request failed: {exc}") from exc
-    if resp.status_code != 200:
-        raise MirrorSyncError(f"GitHub tree call returned HTTP {resp.status_code}")
-    try:
-        data = resp.json()
-    except ValueError as exc:
-        raise MirrorSyncError("GitHub tree response was not JSON") from exc
+        data = get_tree(repo, branch, token, user_agent=USER_AGENT)
+    except GitHubHttpError as exc:
+        raise MirrorSyncError(str(exc)) from exc
     return parse_tree_response(data)
 
 
 def fetch_raw_text(url: str, token: str | None) -> str | None:
-    """Fetch one raw file; None on any transport failure or non-200 (S7 retry signal)."""
-    headers = {"User-Agent": USER_AGENT}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    try:
-        resp = httpx.get(url, headers=headers, timeout=30.0, follow_redirects=True)
-    except httpx.HTTPError:
-        return None
-    return resp.text if resp.status_code == 200 else None
+    """Fetch one raw file; None on any transport failure or non-200."""
+    return get_raw(url, token, user_agent=USER_AGENT)
 
 
 def _fetch_batch(
@@ -182,13 +147,8 @@ def _fetch_batch(
     workers: int = _FETCH_WORKERS,
 ) -> dict[str, str | None]:
     """Fetch all urls in threads (sync httpx, off the event loop by the caller)."""
-    if not urls:
-        return {}
-    with ThreadPoolExecutor(max_workers=min(workers, len(urls))) as pool:
-        return dict(zip(urls, pool.map(lambda u: fetch_raw(u, token), urls)))
+    return get_many(urls, token, fetch_raw, workers=workers)
 
-
-# -------------------------------------------------------------------- sync #
 
 MirrorResult = dict[str, Any]
 
@@ -204,8 +164,7 @@ async def sync_mirror_once(
     """One incremental mirror pass. Raises MirrorSyncError when the tree call fails.
 
     Returns ``{status, head_sha, fetched, removed, failed, links}`` where
-    status is "unchanged" (head sha match, zero fetches — S3) or "synced".
-    """
+    status is "unchanged" or "synced"."""
     token = None
     secret = getattr(settings, "github_token", None)
     if secret is not None:
@@ -215,12 +174,12 @@ async def sync_mirror_once(
     head_sha, tree = await to_thread(fetch_tree, repo, branch, token)
     state = await get_mirror_state(conn)
     if state is not None and state.head_sha == head_sha:
-        await set_mirror_state(conn, head_sha)  # refresh synced_at only
+        await set_mirror_state(conn, head_sha)
         logger.debug("mirror unchanged head=%s repo=%s@%s", head_sha, repo, branch)
         return {"status": "unchanged", "head_sha": head_sha, "fetched": 0,
                 "removed": [], "failed": 0, "links": 0}
 
-    live: dict[str, str] = {}  # folder -> blob sha
+    live: dict[str, str] = {}
     for entry in tree:
         if entry.get("type") != "blob":
             continue
@@ -245,15 +204,13 @@ async def sync_mirror_once(
     for folder, url in zip(changed, urls):
         text = texts.get(url)
         if text is None:
-            failed += 1  # S7: keep old rows, skip storing the sha, retry next tick
+            failed += 1
             continue
         links = extract_readme_links(text)
         await replace_mirror_file_links(conn, folder, links)
         await set_mirror_file_sha(conn, folder, live[folder])
         links_total += len(links)
 
-    # Pin the head sha only after a fully clean pass: a pending failure keeps
-    # the state stale on purpose so the next tick re-derives the changed set.
     if failed == 0:
         await set_mirror_state(conn, head_sha)
     else:
@@ -263,9 +220,6 @@ async def sync_mirror_once(
             "removed": removed, "failed": failed, "links": links_total}
 
 
-# --------------------------------------------------------------------- loop #
-
-
 async def mirror_sync_loop(
     settings: Any,
     conn: Any,
@@ -273,15 +227,14 @@ async def mirror_sync_loop(
     sleep: Callable[[float], Any] = asyncio.sleep,
     sync: Callable[..., Any] = sync_mirror_once,
 ) -> None:
-    """Mirror sync for the life of the bot process (S4): once at startup, then
+    """Mirror sync for the life of the bot process: once at startup, then
     every ``settings.mirror_sync_interval_hours``.
 
     The startup pass is also the recovery path: a deleted DB (no
     ``mirror_state`` row) or an offline gap (stale head sha) makes that first
     pass re-index what it cannot confirm. Passes run sequentially (no
     overlap), and every failure is logged and retried at the next tick — the
-    loop exits only when cancelled by shutdown.
-    """
+    loop exits only when cancelled by shutdown."""
     interval_hours = float(getattr(settings, "mirror_sync_interval_hours", 1.0))
     interval = interval_hours * 3600.0
     logger.info(

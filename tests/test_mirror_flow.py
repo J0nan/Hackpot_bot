@@ -1,12 +1,11 @@
-"""Flow integration of the repo mirror (repo-mirror-dedup T3; Specs S1, S6).
+"""Flow integration of the repo mirror.
 
 The intake gate must refuse a link that exists only in the repo mirror —
 nothing is created, one ``duplicate_mirror`` audit row is kept, the reply
 names the folder — while DB-row matches keep their exact existing replies
 (in-progress wins over mirror because it is checked first), and a successful
-commit refreshes the mirror immediately (S6). Real aiosqlite + real Settings +
-hand-rolled fakes, same harness style as tests/test_bot_flow.py. No network.
-"""
+commit refreshes the mirror immediately. Real aiosqlite + real Settings +
+hand-rolled fakes, same harness style as tests/test_bot_flow.py. No network."""
 
 from __future__ import annotations
 
@@ -22,9 +21,8 @@ from app.bot import pending_edits, rearm
 from app.bot.flow import (
     ALREADY_COMMITTED,
     ALREADY_COMMITTED_OUTSIDE,
-    ALREADY_IN_PROGRESS,
-    AppDeps,
     STATS_EMPTY,
+    AppDeps,
     ResourceFlow,
 )
 from app.config import Settings
@@ -164,16 +162,13 @@ async def _to_placement(h: dict) -> ResourceFlow:
     return h["flow"]
 
 
-# ------------------------------------------------------------- S1: intake gate
-
-
 async def test_mirror_only_link_is_refused_and_nothing_is_created(h: dict) -> None:
     await upsert_mirror_link(h["conn"], canonical_url_key(GITHUB_URL), GITHUB_URL, "01_Recon/OSINT")
     await h["flow"].handle_start(USER, "jonan")
     result = await h["flow"].handle_text(USER, "jonan", GITHUB_URL)
     assert result.replies == (ALREADY_COMMITTED_OUTSIDE.format(folder="01_Recon/OSINT"),)
     assert result.keyboard is None
-    assert await _resource_count(h) == 0  # no resource row, no flow started
+    assert await _resource_count(h) == 0
     rows = await _audit(h, "duplicate_mirror")
     assert len(rows) == 1 and "01_Recon/OSINT" in rows[0]["detail"]
 
@@ -223,15 +218,12 @@ async def test_committed_db_row_keeps_existing_reply(h: dict) -> None:
 
 
 async def test_stats_unaffected_by_mirror_rows(h: dict) -> None:
-    """S2 acceptance: the mirror never leaks into the curator leaderboards."""
+    """The mirror never leaks into the curator leaderboards."""
     await upsert_mirror_link(h["conn"], "a.test", "https://a.test", "f")
     await upsert_mirror_link(h["conn"], "b.test", "https://b.test", "f")
     await h["flow"].handle_start(USER, "jonan")
     result = await h["flow"].handle_stats(USER, "jonan")
     assert result.replies[0] == STATS_EMPTY
-
-
-# ------------------------------------------------------------- S6: commit refresh
 
 
 async def test_successful_commit_upserts_mirror(h: dict) -> None:

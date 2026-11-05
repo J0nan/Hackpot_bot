@@ -1,14 +1,13 @@
-"""Leveled logging with secret redaction (feature hackpot-logging; Specs S2-S6).
+"""Leveled logging with secret redaction.
 
-The point of this file is S4: a credential must never reach the log stream.
+The point of this file is: a credential must never reach the log stream.
 That guarantee lives on the *handler filter*, so redaction is proven through
 the real configured handler and captured ``stdout`` (``capsys``) — never
 through ``caplog``, whose own handler bypasses the handler we install.
 
 Wiring seams (decision / github / flow) are exercised against their real
 functions so a log line that exists in the module is pinned, while the
-existing behaviour (return values, raised errors) stays untouched (S6).
-"""
+existing behaviour (return values, raised errors) stays untouched."""
 
 from __future__ import annotations
 
@@ -30,8 +29,6 @@ from app.security.rate_limit import RateLimiter
 from app.services.decision import DecisionClient
 from app.services.github import FetchError, GitHubClient
 
-# Credentials used as *shapes* the filter must catch even when they are not
-# configured as literals, plus literals passed to setup_logging.
 FAKE_BOT_TOKEN = "123456:FAKEBOTTOKENabcdefghijkl"
 FAKE_SK_KEY = "sk-FAKEQWENKEY0123456789abcdef"
 FAKE_GHP = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz012345"
@@ -43,9 +40,6 @@ CATEGORIES = {"02_Web_Application/Vulnerability_Specific": "web vulnerability to
 CHOSEN = "02_Web_Application/Vulnerability_Specific"
 
 
-# --------------------------------------------------------------------------- #
-# fixtures / helpers
-# --------------------------------------------------------------------------- #
 @pytest.fixture(autouse=True)
 def _clean_root_logging() -> Iterator[None]:
     """Detach the hackpot handler and restore the root level after each test."""
@@ -88,9 +82,6 @@ class Scripted:
         return None
 
 
-# --------------------------------------------------------------------------- #
-# S4 — redaction through the REAL handler / captured stdout
-# --------------------------------------------------------------------------- #
 def test_redaction_scrubles_all_shapes_through_handler(capsys: pytest.CaptureFixture[str]) -> None:
     setup_logging("DEBUG", secrets=(FAKE_BOT_TOKEN, FAKE_SK_KEY))
     logger = get_logger("hackpot.redaction")
@@ -133,16 +124,12 @@ def test_redaction_filter_is_idempotent_and_keeps_safe_text() -> None:
         "safe line about %s", ("folders",), None,
     )
     assert filt.filter(record) is True
-    # The message is rendered onto record.msg so downstream handlers see scrubbed text.
     assert record.getMessage() == "safe line about folders"
 
 
-# --------------------------------------------------------------------------- #
-# S2 — setup idempotence, default INFO suppression, get_logger
-# --------------------------------------------------------------------------- #
 def test_setup_logging_is_idempotent(capsys: pytest.CaptureFixture[str]) -> None:
     setup_logging("DEBUG", secrets=())
-    setup_logging("DEBUG", secrets=())  # a second call must not stack a handler
+    setup_logging("DEBUG", secrets=())
     logger = get_logger("hackpot.idempotent")
     logger.info("only-once-marker")
 
@@ -173,9 +160,6 @@ def test_get_logger_returns_named_propagating_logger() -> None:
     assert logger.propagate is True
 
 
-# --------------------------------------------------------------------------- #
-# S2 — LOG_LEVEL validator on Settings
-# --------------------------------------------------------------------------- #
 def test_log_level_defaults_to_info() -> None:
     assert make_settings().log_level == "INFO"
 
@@ -194,9 +178,6 @@ def test_log_level_rejects_invalid_with_helpful_error() -> None:
         assert level in message
 
 
-# --------------------------------------------------------------------------- #
-# S5 wiring — decision retry WARNING + success INFO, through the real handler
-# --------------------------------------------------------------------------- #
 async def test_decision_retry_warning_and_success_info(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -229,9 +210,6 @@ async def test_decision_retry_warning_and_success_info(
     assert FAKE_SK_KEY not in out
 
 
-# --------------------------------------------------------------------------- #
-# S5 wiring — github DEBUG request line + INFO commit + WARNING on error
-# --------------------------------------------------------------------------- #
 async def test_github_logs_commit_without_token(capsys: pytest.CaptureFixture[str]) -> None:
     setup_logging("DEBUG", secrets=(FAKE_GHP,))
     commit_url = "https://github.com/HackPot-HQ/Hackpot/commit/deadbeef"
@@ -246,7 +224,7 @@ async def test_github_logs_commit_without_token(capsys: pytest.CaptureFixture[st
     assert url == commit_url
     out = capsys.readouterr().out
     assert "[app.services.github]" in out, "github seams log through the github logger"
-    assert "PUT" in out and "main" in out  # DEBUG request summary carries method + branch
+    assert "PUT" in out and "main" in out
     assert "github commit ok" in out, "successful commit INFO must be logged"
     assert commit_url in out, "successful commit INFO must carry the commit url"
     assert FAKE_GHP not in out, "the PAT must never reach the log stream"
@@ -264,8 +242,6 @@ async def test_github_warns_on_read_error(capsys: pytest.CaptureFixture[str]) ->
         await client.aclose()
 
     out = capsys.readouterr().out
-    # Prove it is OUR github WARNING (status only), not httpx's log; the misleading
-    # fake-correlation token must be gone (review R2-1).
     assert "[app.services.github]" in out
     assert "WARNING" in out
     assert "HTTP 403" in out
@@ -273,9 +249,6 @@ async def test_github_warns_on_read_error(capsys: pytest.CaptureFixture[str]) ->
     assert FAKE_GHP not in out
 
 
-# --------------------------------------------------------------------------- #
-# S5 wiring — flow logs the unauthorized WARNING (id + username only)
-# --------------------------------------------------------------------------- #
 async def test_flow_logs_unauthorized(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     setup_logging("DEBUG", secrets=(FAKE_BOT_TOKEN,))
     settings = make_settings(db_path=tmp_path / "hackpot.sqlite3")

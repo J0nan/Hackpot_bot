@@ -1,9 +1,8 @@
 """Environment-only configuration, validated fail-fast at startup.
 
-All values come from docker compose env vars (Spec S6). This module is the
-shared contract for every other component: import `Settings` and read fields,
-never call os.environ elsewhere.
-"""
+All values come from docker compose env vars. This module is the shared
+contract for every other component: import `Settings` and read fields, never
+call os.environ elsewhere."""
 
 from __future__ import annotations
 
@@ -12,17 +11,14 @@ import re
 from pathlib import Path
 from typing import Annotated, Any
 
-from cryptography.fernet import Fernet, InvalidToken  # noqa: F401  (key validation)
+from cryptography.fernet import Fernet
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.logging_config import LEVELS
 
-# github.com owner/repo (owner max 39, repo max 100 chars)
 REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,38})/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$")
-# Hackpot leaf category path: "NN_Domain_Name/Sub_Category"
 LEAF_PATH_RE = re.compile(r"^\d{2}_[A-Za-z0-9_]+/[A-Za-z0-9_]+$")
-# System One contract limit: choice options 1-255.
 MAX_CATEGORIES = 255
 
 
@@ -51,26 +47,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SECRETS_ENCRYPTION_KEY", "fernet_key")
     )
     rate_limit_per_min: int = Field(default=10, ge=1, le=1000)
-    # LOG_LEVEL (env, case-insensitive via model_config) — drives setup_logging.
-    # Default keeps every existing Settings construction green (S6).
     log_level: str = "INFO"
-    # Daily automatic category sync (app.services.category_sync): a background
-    # task syncs once at startup and then every day at CATEGORY_SYNC_TIME
-    # (24h HH:MM, local wall clock), hot-swapping settings.categories so the
-    # running bot and decision model use the latest Hackpot leaves without a
-    # restart. Defaults keep every existing construction green (all optional).
     category_sync_enabled: bool = True
     category_sync_time: str = "00:00"
     category_sync_keep_curated: bool = False
-    # Optional read-only GitHub token for the daily sync (raises the API rate
-    # limit; the CLI reads the same variable).
     github_token: SecretStr | None = None
-    # Repo mirror (repo-mirror-dedup S3/S4): app/services/repo_mirror.py keeps
-    # mirror_links current with every URL listed in a target-repo README, so
-    # intake can refuse links the bot never saw. The background task syncs once
-    # immediately at startup (recovers a deleted DB or an offline gap) and then
-    # every MIRROR_SYNC_INTERVAL_HOURS — incremental, so a quiet repo costs one
-    # tree API call per tick. Defaults keep every existing construction green.
     mirror_sync_enabled: bool = True
     mirror_sync_interval_hours: float = Field(default=1.0, gt=0.0, le=24.0)
 
@@ -167,5 +148,5 @@ class Settings(BaseSettings):
         return folder
 
     def readme_path(self, folder: str) -> str:
-        """Path of the leaf README inside the target repo (S13)."""
+        """Path of the leaf README inside the target repo."""
         return f"{self.folder_or_reject(folder)}/README.md"

@@ -102,7 +102,6 @@ class TestApplyRefresh:
         )
         settings = make_settings()
         merged = cs.apply_refresh(settings, env_file=None)
-        # Repo README intros are the source of truth; the removed leaf is gone.
         assert merged == {p: f"desc for {p}" for p in LEAVES}
         assert settings.categories == merged
 
@@ -146,7 +145,7 @@ class TestApplyRefresh:
         settings = make_settings()
         cs.apply_refresh(settings, env_file=env)
         text = env.read_text(encoding="utf-8")
-        line = next(l for l in text.splitlines() if l.startswith("CATEGORIES_JSON="))
+        line = next(candidate for candidate in text.splitlines() if candidate.startswith("CATEGORIES_JSON="))
         assert json.loads(line.split("=", 1)[1]) == {p: "fresh" for p in LEAVES}
         assert "# keep me" in text and "TARGET_REPO=HackPot-HQ/Hackpot" in text
         backup = tmp_path / ".env.bak"
@@ -168,7 +167,7 @@ class TestCategoryRefreshLoop:
 
         async def sleep(seconds: float) -> None:
             delays.append(seconds)
-            raise asyncio.CancelledError  # shutdown before the midnight wake
+            raise asyncio.CancelledError
 
         async def to_thread(fn, *args):
             refreshed.append(args[0])
@@ -179,7 +178,6 @@ class TestCategoryRefreshLoop:
                 settings, sleep=sleep, to_thread=to_thread,
                 refresh=lambda s: dict(s.categories), now=lambda: now,
             )
-        # The refresh ran immediately at startup, then the loop armed the slot.
         assert refreshed == [settings]
         assert delays == [2 * 3600]
 
@@ -200,8 +198,6 @@ class TestCategoryRefreshLoop:
                 settings, sleep=sleep, refresh=boom,
                 now=lambda: datetime(2026, 10, 26, 22, 0, 0),
             )
-        # A dead startup sync is logged, not fatal: the nightly slot is armed
-        # and the current categories survive.
         assert len(slept) == 1
         assert settings.categories == {"01_Recon_and_OSINT/OSINT": "old curated"}
 
@@ -225,7 +221,6 @@ class TestCategoryRefreshLoop:
                 settings, sleep=sleep, to_thread=to_thread,
                 refresh=None, now=lambda: datetime(2026, 10, 26, 22, 0, 0),
             )
-        # The failure was logged, not fatal: the loop scheduled the next slot.
         assert len(slept) == 2
 
     async def test_default_refresh_is_apply(self, monkeypatch):
@@ -241,7 +236,7 @@ class TestCategoryRefreshLoop:
                 st, sleep=sleep,
                 now=lambda: datetime(2026, 10, 26, 22, 0, 0),
             )
-        assert called == [st]  # startup run fires before the first sleep
+        assert called == [st]
 
 
 class TestSettingsFields:
@@ -298,10 +293,10 @@ class TestScriptCliUnchanged:
         assert f"Fetching {REPO}@{BRANCH} tree from GitHub ..." in out
         assert "Fetching 2 leaf README description(s) from raw.githubusercontent ..." in out
         assert "  2 README intro(s) found." in out
-        line = next(l for l in env.read_text(encoding="utf-8").splitlines()
-                    if l.startswith("CATEGORIES_JSON="))
+        line = next(candidate for candidate in env.read_text(encoding="utf-8").splitlines()
+                    if candidate.startswith("CATEGORIES_JSON="))
         assert json.loads(line.split("=", 1)[1]) == {p: "readme text" for p in LEAVES}
-        assert list(tmp_path.glob(".env.bak.*"))  # timestamped backup, as before
+        assert list(tmp_path.glob(".env.bak.*"))
 
     def test_dry_run_writes_nothing(self, script_mod, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(cs, "fetch_tree", fake_fetch_tree(BASE_TREE))

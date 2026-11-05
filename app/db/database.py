@@ -1,4 +1,4 @@
-"""SQLite persistence layer (Spec S10): connection bootstrap and schema.
+"""SQLite persistence layer: connection bootstrap and schema.
 
 `open_db` is the single entry point. It creates the database file and any
 missing parent directories, applies the PRAGMAs every other component
@@ -7,8 +7,7 @@ idempotently, and commits — so the bot survives updates and restarts with
 pending flows intact.
 
 The `enc_token` column stores opaque ciphertext blobs produced by
-app/security; this layer never performs cryptography itself.
-"""
+app/security; this layer never performs cryptography itself."""
 
 from __future__ import annotations
 
@@ -17,7 +16,6 @@ from pathlib import Path
 
 import aiosqlite
 
-# All resource states; mirrors the resources.state CHECK constraint exactly.
 RESOURCE_STATES: frozenset[str] = frozenset(
     {
         "NEW",
@@ -32,12 +30,9 @@ RESOURCE_STATES: frozenset[str] = frozenset(
     }
 )
 
-# Final states end a resource's life. Resume after restart (S10) only looks
-# at the remaining, non-final states; the tuple order is stable for SQL.
 FINAL_STATES: frozenset[str] = frozenset({"COMMITTED", "FAILED", "CANCELLED"})
 ACTIVE_STATES: tuple[str, ...] = tuple(sorted(RESOURCE_STATES - FINAL_STATES))
 
-# Resource source kinds; mirrors the resources.kind CHECK constraint.
 RESOURCE_KINDS: frozenset[str] = frozenset({"github", "other"})
 
 SCHEMA = """
@@ -82,7 +77,6 @@ CREATE TABLE IF NOT EXISTS decisions (
     confidence         REAL NOT NULL DEFAULT 0,
     probabilities_json TEXT NOT NULL DEFAULT '{}',
     needs_admin        REAL,
-    cost_choice        TEXT NOT NULL DEFAULT '',
     raw_json           TEXT NOT NULL DEFAULT '{}',
     created_at         TEXT NOT NULL
 );
@@ -96,7 +90,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at  TEXT NOT NULL
 );
 
--- Repo mirror (repo-mirror-dedup S1/S2): every link currently listed in a
+-- Repo mirror: every link currently listed in a
 -- README of the target repo, including links added outside the bot. One row
 -- per (folder, url_key): a hand-duplicated entry stays visible from each
 -- README that lists it, and deleting one file cannot blind the intake gate.

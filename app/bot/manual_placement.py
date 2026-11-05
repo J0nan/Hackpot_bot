@@ -1,8 +1,8 @@
-"""Process-local manual-placement marks (unreliable-decision-retry S6).
+"""Process-local manual-placement marks.
 
 When the user presses ``🛠️ Manual classify`` on the unreliable-decision step
 they take over folder placement: the text-context invite is ended for that
-resource, so any later text is a stray message the flow-interrupt gate guards
+resource, so any later text is a stray message the Continue/Cancel gate guards
 (Continue/Cancel) instead of classification context.
 
 Like ``rearm`` and ``pending_edits`` the store is deliberately process-local:
@@ -10,8 +10,7 @@ no DB schema change, no new FSM state — a restart drops the marks and the
 Continue re-offer falls back to the armed invite (silent, safe degradation).
 
 Keyed by resource id: choosing a folder or cancelling clears the mark, and a
-new link starts a fresh resource whose invite is available again.
-"""
+new link starts a fresh resource whose invite is available again."""
 
 from __future__ import annotations
 

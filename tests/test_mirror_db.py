@@ -1,15 +1,15 @@
-"""Mirror index persistence (repo-mirror-dedup T1; Specs S1, S2).
+"""Mirror index persistence.
 
 Schema bootstrap for the three mirror tables, the typed repository functions
 behind the repo mirror (link upsert/find/replace, per-file blob shas, single-row
 sync state), and the multi-folder semantics: one URL listed under two leaf
 READMEs is two rows, and deleting one file must not blind the intake gate to
-the other listing. Real aiosqlite under tmp_path; no network, no live data.
-"""
+the other listing. Real aiosqlite under tmp_path; no network, no live data."""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
@@ -52,9 +52,6 @@ async def _folder_keys(conn: aiosqlite.Connection, folder: str) -> set[str]:
         return {row["url_key"] for row in await cursor.fetchall()}
 
 
-# ----------------------------------------------------------------- schema
-
-
 async def test_schema_creates_mirror_tables(db: aiosqlite.Connection) -> None:
     assert MIRROR_TABLES <= await _table_names(db)
 
@@ -68,9 +65,6 @@ async def test_reopening_db_keeps_mirror_state(db: aiosqlite.Connection, tmp_pat
         assert state is not None and state.head_sha == "head-1"
     finally:
         await second.close()
-
-
-# ------------------------------------------------------------ mirror_links
 
 
 async def test_find_unknown_key_returns_none(db: aiosqlite.Connection) -> None:
@@ -111,7 +105,7 @@ async def test_find_is_deterministic_across_folders(db: aiosqlite.Connection) ->
     await upsert_mirror_link(db, "k", "https://a", "zz")
     await upsert_mirror_link(db, "k", "https://a", "aa")
     row = await find_mirror_link(db, "k")
-    assert row is not None and row.folder == "aa"  # ORDER BY folder, first hit
+    assert row is not None and row.folder == "aa"
 
 
 async def test_replace_file_links_prunes_stale_and_keeps_other_folders(
@@ -120,9 +114,9 @@ async def test_replace_file_links_prunes_stale_and_keeps_other_folders(
     await replace_mirror_file_links(db, "f1", [("k1", "https://1"), ("k2", "https://2")])
     await replace_mirror_file_links(db, "f2", [("k2", "https://2")])
     await replace_mirror_file_links(db, "f1", [("k2", "https://2"), ("k3", "https://3")])
-    assert await find_mirror_link(db, "k1") is None  # stale entry pruned
+    assert await find_mirror_link(db, "k1") is None
     assert await _folder_keys(db, "f1") == {"k2", "k3"}
-    assert await _folder_keys(db, "f2") == {"k2"}  # untouched by f1's replace
+    assert await _folder_keys(db, "f2") == {"k2"}
 
 
 async def test_replace_with_empty_links_clears_folder_only(db: aiosqlite.Connection) -> None:
@@ -135,20 +129,17 @@ async def test_replace_with_empty_links_clears_folder_only(db: aiosqlite.Connect
 
 
 async def test_repository_functions_commit_immediately(db: aiosqlite.Connection) -> None:
-    """No caller-side commit: a second connection sees the write (S4 restart safety)."""
+    """No caller-side commit: a second connection sees the write."""
     await upsert_mirror_link(db, "k", "https://a", "f1")
     async with db.execute("SELECT COUNT(*) AS n FROM mirror_links") as cursor:
         assert (await cursor.fetchone())["n"] == 1
-
-
-# ------------------------------------------------------------ mirror_files
 
 
 async def test_mirror_files_sha_map_roundtrip(db: aiosqlite.Connection) -> None:
     assert await list_mirror_files(db) == {}
     await set_mirror_file_sha(db, "f1/README.md", "sha-a")
     await set_mirror_file_sha(db, "f2/README.md", "sha-b")
-    await set_mirror_file_sha(db, "f1/README.md", "sha-c")  # upsert overwrites
+    await set_mirror_file_sha(db, "f1/README.md", "sha-c")
     assert await list_mirror_files(db) == {"f1/README.md": "sha-c", "f2/README.md": "sha-b"}
 
 
@@ -158,9 +149,6 @@ async def test_delete_mirror_file_clears_sha_and_links(db: aiosqlite.Connection)
     await delete_mirror_file(db, "f1")
     assert await list_mirror_files(db) == {}
     assert await find_mirror_link(db, "k1") is None
-
-
-# ------------------------------------------------------------ mirror_state
 
 
 async def test_mirror_state_absent_before_first_sync(db: aiosqlite.Connection) -> None:
@@ -180,9 +168,7 @@ async def test_mirror_state_single_row_overwritten(db: aiosqlite.Connection) -> 
 async def test_mirror_state_timestamp_matches_utc_now_shape(
     db: aiosqlite.Connection,
 ) -> None:
-    """synced_at uses the package's single timestamp source (ISO-8601 with Z)."""
-    from datetime import datetime
-
+    """The synced_at value uses the package's single timestamp source (ISO-8601 with Z)."""
     await set_mirror_state(db, "head-1")
     state = await get_mirror_state(db)
     assert state is not None
