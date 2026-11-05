@@ -35,9 +35,6 @@ def _cells(kb) -> list[list[tuple[str, str]]]:
     return [[(b.text, b.callback_data) for b in row] for row in kb.inline_keyboard]
 
 
-# ---------------------------------------------------------------- candidates
-
-
 def test_candidates_kb_number_buttons_match_rank_order() -> None:
     candidates = [
         FolderCandidate("02_Web_Application/Vulnerability_Specific", 0.751, True),
@@ -45,7 +42,7 @@ def test_candidates_kb_number_buttons_match_rank_order() -> None:
     ]
     rows = _cells(candidates_kb(candidates, FOLDERS))
     assert rows[0] == [
-        (KC(1), "c:1"),  # c: stays an index into the sorted list, not candidate order
+        (KC(1), "c:1"),
         (KC(2), "c:0"),
     ]
     assert rows[-1] == [("📂 Other folder…", "o")]
@@ -59,16 +56,15 @@ def test_candidates_list_html_carries_the_readable_names_and_percents() -> None:
     ]
     text = folder_picker.candidates_list_html(candidates, sorted([c.folder for c in candidates]))
     numbers = KEYCAP_RE.findall(text)
-    assert numbers == ["1", "2"]  # same rank order as the buttons
-    assert "75%" in text  # int truncation kept from the old button labels
+    assert numbers == ["1", "2"]
+    assert "75%" in text
     assert "19%" in text
-    # Picker layout: domain header flush left, keycap'd leaf indented below it.
     assert (
         f"🗂️ <b>15 · AI and Machine Learning</b>\n  {KC(1)} Adversarial ML and Model Security — <i>75%</i>"
         in text
     )
     assert f"🗂️ <b>01 · Recon</b>\n  {KC(2)} OSINT — <i>19%</i>" in text
-    assert "Other folder" in text  # the full-list override stays discoverable
+    assert "Other folder" in text
 
 
 def test_candidates_list_html_groups_same_domain_under_one_header() -> None:
@@ -113,9 +109,6 @@ def test_candidate_callbacks_never_carry_raw_paths_and_fit_64_bytes() -> None:
             assert len(data.encode("utf-8")) <= 64
 
 
-# ---------------------------------------------------------------- full list
-
-
 def _folders_12() -> list[str]:
     return [f"NN_Domain{i}/Sub{i:02d}" for i in range(12)]
 
@@ -144,7 +137,7 @@ def test_folders_kb_page_zero_number_buttons_with_next() -> None:
     folders = _folders_12()
     rows = _cells(folders_kb(folders, page=0, size=10))
     body = rows[:-1]
-    assert [len(row) for row in body] == [5, 5]  # five number buttons per row
+    assert [len(row) for row in body] == [5, 5]
     assert [cell for row in body for cell in row] == [
         (KC(i + 1), f"f:{i}") for i in range(10)
     ]
@@ -174,7 +167,7 @@ def test_folders_kb_single_page_has_no_nav() -> None:
 
 def test_folders_kb_middle_page_has_both_nav_buttons() -> None:
     folders = _folders_12()
-    rows = _cells(folders_kb(folders, page=1, size=4))  # 0:[0:4] 1:[4:8] 2:[8:12]
+    rows = _cells(folders_kb(folders, page=1, size=4))
     body = [cell for row in rows[:-1] for cell in row]
     assert body == [(KC(i - 3), f"f:{i}") for i in range(4, 8)]
     assert rows[-1] == [("⬅️ Back", "p:0"), ("Next ➡️", "p:2")]
@@ -183,9 +176,6 @@ def test_folders_kb_middle_page_has_both_nav_buttons() -> None:
 def test_folders_kb_clamps_negative_page() -> None:
     rows = _cells(folders_kb(_folders_12(), page=-3, size=10))
     assert rows[0][0] == (KC(1), "f:0")
-
-
-# ------------------------------------------------------------ list caption
 
 
 def test_folders_list_html_numbers_match_the_buttons() -> None:
@@ -199,8 +189,6 @@ def test_folders_list_html_numbers_match_the_buttons() -> None:
     ]
     assert numbers == ["1", "2", "3"]
     assert button_labels == [KC(1), KC(2), KC(3)]
-    # Every full path is readable: formatted leaf lines under a formatted
-    # domain header, shown once per domain per page.
     assert "🗂️ <b>03 · Physical Security</b>" in text
     assert "🗂️ <b>05 · Exploitation and PrivEsc</b>" in text
     assert text.count("05 · Exploitation and PrivEsc") == 1
@@ -214,7 +202,7 @@ def test_folders_list_html_paginates_like_the_keyboard() -> None:
     folders = _folders_12()
     text = folder_picker.folders_list_html(folders, page=1, size=5)
     assert "Page 2 of 3" in text
-    assert f"{KC(1)} Sub05" in text  # page-local numbering restarts
+    assert f"{KC(1)} Sub05" in text
     assert "Sub00" not in text
 
 
@@ -225,17 +213,13 @@ def test_folders_list_html_beyond_last_page_clamps_to_last() -> None:
 
 
 def test_folders_list_html_escapes_untrusted_names() -> None:
-    # LEAF_PATH_RE forbids these, but the builder must never emit raw markup.
     text = folder_picker.folders_list_html(["01_A<b>C/D<b>E"], page=0, size=10)
     assert "A<b>C" not in text
     assert "D<b>E" not in text
     assert "A&lt;b&gt;C" in text
 
 
-# ------------------------------------------------------- 64-char button cap
-
-
-LONG_FOLDER = "15_AI_and_Machine_Learning/Adversarial_ML_and_Model_Security"  # 60 chars
+LONG_FOLDER = "15_AI_and_Machine_Learning/Adversarial_ML_and_Model_Security"
 
 
 def test_confirm_kb_long_folder_label_fits_telegram_limit() -> None:
@@ -257,9 +241,6 @@ def test_every_button_label_fits_telegram_limit() -> None:
         for row in _cells(kb):
             for label, _ in row:
                 assert _tg_len(label) <= 64, label
-
-
-# ------------------------------------------------- domain-aligned page windows
 
 
 PACK = [
@@ -288,14 +269,13 @@ def test_page_windows_pack_domains_into_a_full_page() -> None:
 def test_oversized_domain_spans_whole_pages_of_itself() -> None:
     big = [f"01_Big/Leaf{i:02d}" for i in range(7)] + ["02_Small/Only"]
     windows = folder_picker.page_windows(big, size=5)
-    # page 1: only the big domain; page 2: its remainder, then packing continues
     assert windows == [(0, big[0:5]), (5, big[5:8])]
 
 
 def test_page_slice_and_count_pages_agree() -> None:
     windows = folder_picker.page_windows(PACK, size=3)
     assert folder_picker.count_pages(PACK, size=3) == len(windows) == 4
-    page, start, chunk = folder_picker.page_slice(PACK, 9, size=3)  # clamped to last
+    page, start, chunk = folder_picker.page_slice(PACK, 9, size=3)
     assert (page, start, chunk) == (3, 6, PACK[6:8])
 
 
@@ -313,13 +293,9 @@ def test_folders_kb_next_disappears_on_last_aligned_page() -> None:
 
 
 def test_folders_kb_clamps_stale_page_after_sync() -> None:
-    # Categories shrink between presses: an out-of-range page shows the last window.
     rows = _cells(folders_kb(PACK, page=99, size=3))
     assert rows[0] == [(KC(1), "f:6"), (KC(2), "f:7")]
     assert rows[-1] == [("⬅️ Back", "p:2")]
-
-
-# ---------------------------------------------------------------- interview
 
 
 def test_type_kb_lists_allowed_types_only_as_direct_callbacks() -> None:
@@ -338,7 +314,6 @@ def test_confirm_kb_labels_destination_folder() -> None:
     rows = _cells(confirm_kb("02_Web_Application/Vulnerability_Specific"))
     assert rows[0][0] == ("✅ Commit to 02_Web_Application/Vulnerability_Specific", "✅")
     assert rows[1][0] == ("❌ Cancel", "❌")
-    # S6.1 (T4): one row, two field-edit buttons — the "e" row is gone.
     assert rows[2] == [("✏️ Description", "d"), ("🏷️ Tags", "t")]
     assert len(rows) == 3
 
@@ -346,13 +321,10 @@ def test_confirm_kb_labels_destination_folder() -> None:
 def test_confirm_kb_edit_payload_is_short_and_path_free() -> None:
     rows = _cells(confirm_kb("01_Recon/OSINT"))
     payloads = [data for row in rows for _, data in row]
-    assert "e" not in payloads  # S6.7: the whole-bullet edit payload was removed
+    assert "e" not in payloads
     for data in payloads:
         assert "/" not in data
-        assert len(data.encode("utf-8")) <= 64  # Telegram callback_data budget
-
-
-# ---------------------------------------------------------------- /help
+        assert len(data.encode("utf-8")) <= 64
 
 
 def test_help_text_documents_commands_and_public_rule() -> None:

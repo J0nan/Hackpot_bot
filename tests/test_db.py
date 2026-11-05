@@ -66,17 +66,12 @@ async def _get_user(conn: aiosqlite.Connection, tg_user_id: int) -> User:
     return User.from_row(row)
 
 
-# ---------------------------------------------------------------- timestamps
-
 def test_utc_now_is_iso8601_with_z_suffix() -> None:
     stamp = utc_now()
     assert stamp.endswith("Z")
-    # Must be parseable ISO-8601 in UTC.
     parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     assert parsed.tzinfo is not None
 
-
-# ---------------------------------------------------------------- open_db
 
 async def test_open_db_creates_parent_dirs(tmp_path: Path) -> None:
     path = tmp_path / "nested" / "deeper" / "hackpot.sqlite3"
@@ -94,7 +89,6 @@ async def test_open_db_schema_is_idempotent(tmp_path: Path) -> None:
     await upsert_user(first, 1, "alice")
     await first.close()
 
-    # Reopening re-runs SCHEMA over existing data without error or loss (S10).
     second = await open_db(path)
     try:
         assert await _table_names(second) >= TABLES
@@ -113,8 +107,6 @@ async def test_pragmas_wal_foreign_keys_busy_timeout(db: aiosqlite.Connection) -
     assert timeout is not None and timeout[0] == 5000
 
 
-# ---------------------------------------------------------------- users
-
 async def test_upsert_user_keeps_first_seen_and_refreshes_username(
     db: aiosqlite.Connection,
 ) -> None:
@@ -124,7 +116,7 @@ async def test_upsert_user_keeps_first_seen_and_refreshes_username(
     await upsert_user(db, 101, "alice-renamed")
     after = await _get_user(db, 101)
 
-    assert after.first_seen == before.first_seen  # first_seen stays stable
+    assert after.first_seen == before.first_seen
     assert after.username == "alice-renamed"
     assert after.last_seen != before.last_seen
     assert after.first_seen.endswith("Z") and after.last_seen.endswith("Z")
@@ -136,8 +128,6 @@ async def test_upsert_user_creates_distinct_rows(db: aiosqlite.Connection) -> No
     assert (await _get_user(db, 1)).tg_user_id == 1
     assert (await _get_user(db, 2)).username == "bob"
 
-
-# ---------------------------------------------------------------- github tokens
 
 async def test_github_token_crud_roundtrip(db: aiosqlite.Connection) -> None:
     await upsert_user(db, 1, "alice")
@@ -154,7 +144,7 @@ async def test_github_token_crud_roundtrip(db: aiosqlite.Connection) -> None:
     rotated = await get_github_token(db, 1)
     assert rotated is not None and stored is not None
     assert rotated.enc_token == "gAAAAAB-fake-ciphertext-two"
-    assert rotated.created_at == stored.created_at  # created_at stays stable
+    assert rotated.created_at == stored.created_at
     assert rotated.updated_at != stored.updated_at
 
     await delete_github_token(db, 1)
@@ -165,8 +155,6 @@ async def test_github_token_foreign_key_enforced(db: aiosqlite.Connection) -> No
     with pytest.raises(sqlite3.IntegrityError):
         await save_github_token(db, 999, "orphan-ciphertext")
 
-
-# ---------------------------------------------------------------- resources
 
 async def test_create_resource_returns_id_with_new_defaults(
     db: aiosqlite.Connection,
@@ -213,7 +201,7 @@ async def test_set_resource_state_updates_whitelisted_columns(
     assert after.state == "NEED_SUMMARY"
     assert after.context == "a summary"
     assert after.folder == "02_Web/SQLi"
-    assert after.created_at == before.created_at  # created_at never rewritten
+    assert after.created_at == before.created_at
     assert after.updated_at.endswith("Z") and after.updated_at >= before.updated_at
 
 
@@ -234,11 +222,11 @@ async def test_set_resource_state_rejects_invalid_state_and_unknown_column(
 
     with pytest.raises(ValueError):
         await set_resource_state(db, resource_id, "NOT_A_STATE")
-    with pytest.raises(ValueError):  # typo of COMMITTED, outside the CHECK list
+    with pytest.raises(ValueError):
         await set_resource_state(db, resource_id, "COMMITED")
     with pytest.raises(ValueError):
         await set_resource_state(db, resource_id, "NEW", bogus_column="x")
-    with pytest.raises(ValueError):  # kind/url/id/tg_user_id are not updatable
+    with pytest.raises(ValueError):
         await set_resource_state(db, resource_id, "NEW", kind="other")
     with pytest.raises(ValueError):
         await set_resource_state(db, resource_id, "NEW", updated_at="2020-01-01T00:00:00Z")
@@ -246,8 +234,6 @@ async def test_set_resource_state_rejects_invalid_state_and_unknown_column(
     untouched = await get_resource(db, resource_id)
     assert untouched is not None and untouched.state == "NEW"
 
-
-# ---------------------------------------------------------------- resume
 
 async def test_resume_returns_only_non_final_states_newest_first(
     db: aiosqlite.Connection,
@@ -259,13 +245,11 @@ async def test_resume_returns_only_non_final_states_newest_first(
     r3 = await create_resource(db, 5, "https://a.example/3", "other")
     other = await create_resource(db, 6, "https://b.example/1", "github")
 
-    # All NEW: the newest one wins, and only the requesting user's rows.
     active = await get_active_resource_for_user(db, 5)
     assert active is not None and active.id == r3
     assert (await get_active_resource_for_user(db, 6)) is not None
     assert (await get_active_resource_for_user(db, 404)) is None
 
-    # Each final state (COMMITTED/FAILED/CANCELLED) drops the resource.
     await set_resource_state(db, r3, "COMMITTED")
     assert (await get_active_resource_for_user(db, 5)).id == r2  # type: ignore[union-attr]
     await set_resource_state(db, r2, "CANCELLED")
@@ -273,12 +257,9 @@ async def test_resume_returns_only_non_final_states_newest_first(
     await set_resource_state(db, r1, "FAILED")
     assert await get_active_resource_for_user(db, 5) is None
 
-    # The other user's flow is untouched by user 5 draining its states.
     resumed_other = await get_active_resource_for_user(db, 6)
     assert resumed_other is not None and resumed_other.id == other
 
-
-# ---------------------------------------------------------------- decisions
 
 async def test_record_decision_json_roundtrip(db: aiosqlite.Connection) -> None:
     await upsert_user(db, 1, "alice")
@@ -324,13 +305,11 @@ async def test_record_decision_defaults_and_unknown_field(
     assert row is not None
     decision = Decision.from_row(row)
     assert decision.probabilities_json == "{}"
-    assert decision.needs_admin is None  # REAL column stays NULL when unset
+    assert decision.needs_admin is None
 
     with pytest.raises(ValueError):
         await record_decision(db, resource_id, bogus_field="x")
 
-
-# ---------------------------------------------------------------- audit
 
 async def test_audit_insert_with_null_resource_and_user(
     db: aiosqlite.Connection,
@@ -342,7 +321,7 @@ async def test_audit_insert_with_null_resource_and_user(
     assert row is not None
     event = AuditEvent.from_row(row)
     assert event.tg_user_id is None
-    assert event.resource_id is None  # NULL resource id is legal
+    assert event.resource_id is None
     assert event.action == "unauthorized_message"
     assert event.detail == ""
     assert event.created_at.endswith("Z")
@@ -357,8 +336,6 @@ async def test_audit_insert_with_null_resource_and_user(
     assert event2.tg_user_id == 1 and event2.resource_id == 2
     assert event2.detail == "sha:abcd"
 
-
-# ---------------------------------------------------------------- injection hostility
 
 async def test_hostile_strings_stored_and_retrieved_verbatim(
     db: aiosqlite.Connection,
@@ -400,12 +377,9 @@ async def test_hostile_strings_stored_and_retrieved_verbatim(
     assert row is not None
     assert row["action"] == hostile_username and row["detail"] == hostile_detail
 
-    # Nothing was executed: every table is still present and readable.
     assert await _table_names(db) >= TABLES
     assert await get_active_resource_for_user(db, 42) is not None
 
-
-# ------------------------------------------------- duplicate-check listings
 
 async def test_list_resources_by_states_committed_first_then_newest(
     db: aiosqlite.Connection,
@@ -424,16 +398,12 @@ async def test_list_resources_by_states_committed_first_then_newest(
     await set_resource_state(db, e, "AWAITING_PLACEMENT")
 
     rows = await list_resources_by_states(db, ("NEW", "AWAITING_PLACEMENT", "COMMITTED"))
-    assert [r.id for r in rows] == [d, e, c]  # COMMITTED first, then newest
+    assert [r.id for r in rows] == [d, e, c]
     assert rows[0].folder == "01_Recon/OSINT"
 
-    # Unrequested states stay out; empty input never builds invalid SQL.
     ids = {r.id for r in rows}
     assert a not in ids and b not in ids
     assert await list_resources_by_states(db, ()) == []
-
-
-# ---------------------------------------------------------------- leaderboard
 
 
 async def test_get_upload_leaderboard_empty_db_is_empty_list(db) -> None:
@@ -443,7 +413,7 @@ async def test_get_upload_leaderboard_empty_db_is_empty_list(db) -> None:
 async def test_get_upload_leaderboard_counts_committed_only_and_orders(db) -> None:
     await upsert_user(db, 1, "alice")
     await upsert_user(db, 2, "bob")
-    await upsert_user(db, 3, "carol")  # never uploaded a link -> not on the board
+    await upsert_user(db, 3, "carol")
     a1 = await create_resource(db, 1, "https://a.example/one", "other")
     a2 = await create_resource(db, 1, "https://a.example/two", "other")
     a3 = await create_resource(db, 1, "https://a.example/three", "other")
@@ -451,10 +421,9 @@ async def test_get_upload_leaderboard_counts_committed_only_and_orders(db) -> No
     await set_resource_state(db, a1, "COMMITTED", folder="01_Recon/OSINT")
     await set_resource_state(db, a2, "COMMITTED", folder="01_Recon/OSINT")
     await set_resource_state(db, b1, "COMMITTED", folder="01_Recon/OSINT")
-    await set_resource_state(db, a3, "CANCELLED")  # only COMMITTED rows count
+    await set_resource_state(db, a3, "CANCELLED")
 
     rows = await get_upload_leaderboard(db)
-    # Most committed links first; ties resolved by who committed first, then id.
     assert [(r.tg_user_id, r.username, r.total) for r in rows] == [
         (1, "alice", 2),
         (2, "bob", 1),

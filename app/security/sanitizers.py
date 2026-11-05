@@ -23,7 +23,6 @@ MAX_URL_LENGTH = 2000
 DEFAULT_LINE_LENGTH = 500
 URL_REJECTION_PREFIX = "URL rejected"
 
-# Characters that mean "line break" and therefore collapse to a single space.
 _LINE_BREAK_CHARS = "\t\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 _COMMENT_SPAN_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _COMMENT_MARKERS = ("<!--", "-->")
@@ -52,7 +51,6 @@ def sanitize_url(raw: str) -> str:
 
     try:
         parts = urlsplit(value)
-        # username/password/hostname can raise on malformed hosts (bad IPv6, bad port).
         host = parts.hostname or ""
         has_credentials = bool(parts.username or parts.password) or "@" in parts.netloc
     except ValueError:

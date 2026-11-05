@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-#: Marker modes: which field the pending paste-back edits.
 DESCRIPTION = "description"
 TAGS = "tags"
 

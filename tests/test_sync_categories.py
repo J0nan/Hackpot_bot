@@ -58,9 +58,9 @@ class TestExtractLeaves:
 
     def test_non_matching_dirs_are_ignored(self, mod):
         tree = BASE_TREE + _tree(
-            ("01_Recon_and_OSINT/OSINT/subdir", "tree"),  # too deep
-            ("Tools/misc", "tree"),                        # no NN_ prefix
-            ("Extra_Dir", "tree"),                         # domain only
+            ("01_Recon_and_OSINT/OSINT/subdir", "tree"),
+            ("Tools/misc", "tree"),
+            ("Extra_Dir", "tree"),
         )
         leaves, _ = mod.extract_leaf_paths(tree, require_readme=True)
         assert sorted(leaves) == [
@@ -87,7 +87,6 @@ class TestMergeCategories:
         assert "99_Deleted_Leaf/Gone" not in merged
         assert added == ["02_Web_Application/Proxies_and_Scanners"]
         assert removed == ["99_Deleted_Leaf/Gone"]
-        # New leaf gets a non-empty placeholder and keys stay sorted.
         assert merged["02_Web_Application/Proxies_and_Scanners"].strip()
         assert list(merged) == sorted(merged)
 
@@ -137,7 +136,6 @@ class TestMergeCategories:
         assert merged["02_Social_Engineering/Phishing"] == "Email phishing platforms."
 
     def test_overwrite_falls_back_to_existing_when_readme_missing(self, mod):
-        # Default overwrite, but a leaf whose README has no intro keeps its value.
         existing = {"08_Web_Application/APIs_and_Web_Services": "Hand-tuned criteria"}
         merged, _, _ = mod.merge_categories(existing, ["08_Web_Application/APIs_and_Web_Services"],
                                             {})

@@ -60,17 +60,12 @@ logger = get_logger(__name__)
 USER_AGENT = "hackpot-bot-repo-mirror"
 README_SUFFIX = "/README.md"
 
-# GitHub's recursive tree for a curated docs repo is never expected anywhere
-# near the 100k-entry truncation limit; if it ever is, refusing beats indexing
-# a knowingly incomplete mirror (same rule category_sync applies to leaves).
 _FETCH_WORKERS = 8
 
 
 class MirrorSyncError(RuntimeError):
     """The mirror could not observe the repo state this pass (S7)."""
 
-
-# --------------------------------------------------------------- extraction #
 
 _BULLET_RE = re.compile(r"^\s*[-*+]\s")
 _MD_LINK_RE = re.compile(r"\[[^\]]*\]\((https?://[^\s)]+)\)")
@@ -109,9 +104,6 @@ def extract_readme_links(text: str) -> list[tuple[str, str]]:
                 seen.add(key)
                 links.append((key, url))
     return links
-
-
-# ------------------------------------------------------------------ network #
 
 
 def folder_for_readme(path: str) -> str | None:
@@ -188,8 +180,6 @@ def _fetch_batch(
         return dict(zip(urls, pool.map(lambda u: fetch_raw(u, token), urls)))
 
 
-# -------------------------------------------------------------------- sync #
-
 MirrorResult = dict[str, Any]
 
 
@@ -215,12 +205,12 @@ async def sync_mirror_once(
     head_sha, tree = await to_thread(fetch_tree, repo, branch, token)
     state = await get_mirror_state(conn)
     if state is not None and state.head_sha == head_sha:
-        await set_mirror_state(conn, head_sha)  # refresh synced_at only
+        await set_mirror_state(conn, head_sha)
         logger.debug("mirror unchanged head=%s repo=%s@%s", head_sha, repo, branch)
         return {"status": "unchanged", "head_sha": head_sha, "fetched": 0,
                 "removed": [], "failed": 0, "links": 0}
 
-    live: dict[str, str] = {}  # folder -> blob sha
+    live: dict[str, str] = {}
     for entry in tree:
         if entry.get("type") != "blob":
             continue
@@ -245,15 +235,13 @@ async def sync_mirror_once(
     for folder, url in zip(changed, urls):
         text = texts.get(url)
         if text is None:
-            failed += 1  # S7: keep old rows, skip storing the sha, retry next tick
+            failed += 1
             continue
         links = extract_readme_links(text)
         await replace_mirror_file_links(conn, folder, links)
         await set_mirror_file_sha(conn, folder, live[folder])
         links_total += len(links)
 
-    # Pin the head sha only after a fully clean pass: a pending failure keeps
-    # the state stale on purpose so the next tick re-derives the changed set.
     if failed == 0:
         await set_mirror_state(conn, head_sha)
     else:
@@ -261,9 +249,6 @@ async def sync_mirror_once(
 
     return {"status": "synced", "head_sha": head_sha, "fetched": len(changed),
             "removed": removed, "failed": failed, "links": links_total}
-
-
-# --------------------------------------------------------------------- loop #
 
 
 async def mirror_sync_loop(

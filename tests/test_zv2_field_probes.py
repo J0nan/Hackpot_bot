@@ -246,9 +246,6 @@ def _duck_text_message(text):
     return m
 
 
-# ---------------------------------------------------------------- V1 (S6.1)
-
-
 def test_v1_confirm_keyboard_exact_rows_and_payloads():
     rows = [[(b.text, b.callback_data) for b in r] for r in confirm_kb(CHOSEN).inline_keyboard]
     assert rows == [
@@ -273,9 +270,6 @@ async def test_v1_removed_e_payload_hits_unknown_tail_with_audit(h):
     assert pending_edits.get_marker(rid) is None
 
 
-# ---------------------------------------------------------------- V2 (S6.2)
-
-
 async def test_v2_press_gated_to_confirming_authorized_sender(h):
     rid = await _to_confirming(h)
     result = await _press(h, "d")
@@ -287,7 +281,7 @@ async def test_v2_press_gated_to_confirming_authorized_sender(h):
     marker = pending_edits.get_marker(rid)
     assert marker is not None and marker.mode == "description"
     assert (marker.chat_id, marker.message_id) == (CHAT, CARD)
-    assert (await _row(h, rid)).state == "CONFIRMING"  # the press persisted nothing
+    assert (await _row(h, rid)).state == "CONFIRMING"
     assert await _audit(h, "entry_edit_requested")
 
 
@@ -297,16 +291,16 @@ async def test_v2_press_in_other_states_is_unknown_tail(h):
     assert r_none.replies == (UNKNOWN_CALLBACK,)
     await flow.handle_start(USER, "verifier")
     await flow.handle_text(USER, "verifier", VALID_PAT)
-    await flow.handle_text(USER, "verifier", URL)  # AWAITING_PLACEMENT
+    await flow.handle_text(USER, "verifier", URL)
     r_place = await flow.handle_callback(USER, "verifier", "t", chat_id=CHAT, message_id=CARD)
     assert r_place.replies == (UNKNOWN_CALLBACK,)
-    await flow.handle_folder_choice(USER, CHOSEN)  # AWAITING_ENTRY_INFO
+    await flow.handle_folder_choice(USER, CHOSEN)
     r_entry = await flow.handle_callback(USER, "verifier", "d", chat_id=CHAT, message_id=CARD)
     assert r_entry.replies == (UNKNOWN_CALLBACK,)
     details = [r["detail"] for r in await _audit(h, "callback_ignored")]
     assert details.count("data=d") == 2 and details.count("data=t") == 1
     rid = await _rid(h)
-    assert pending_edits.get_marker(rid) is None  # never armed outside CONFIRMING
+    assert pending_edits.get_marker(rid) is None
     assert (await _row(h, rid)).state == "AWAITING_ENTRY_INFO"
 
 
@@ -315,7 +309,7 @@ async def test_v2_unauthorized_press_silent_and_audited(h):
     await handlers.on_callback(cb, h["deps"], h["flow"])
     assert cb.message.answer.items == [] and cb.message.edit_text.items == []
     assert cb.message.bot.delete_message.items == []
-    assert cb.answer.items == [((), {})]  # empty ack, nothing shown to the sender
+    assert cb.answer.items == [((), {})]
     rows = await _audit(h, "unauthorized_ignored")
     assert rows and rows[-1]["tg_user_id"] == INTRUDER
 
@@ -325,19 +319,16 @@ async def test_v2_handler_renders_press_as_new_messages_bubble_untouched(h):
     stored = await _line(h, rid)
     cb = _duck_callback(USER, "verifier", "d")
     await handlers.on_callback(cb, h["deps"], h["flow"])
-    assert cb.message.edit_text.items == []  # prior card bubble never edited
-    assert len(cb.message.answer.items) == 2  # instruction + code block as NEW messages
+    assert cb.message.edit_text.items == []
+    assert len(cb.message.answer.items) == 2
     (instr, _), (block, kw) = cb.message.answer.items
     assert "escription" in instr[0]
     assert block[0].startswith("<pre>") and block[0].endswith("</pre>")
     assert kw.get("parse_mode") == "HTML"
-    assert kw.get("reply_markup") is None  # the keyboard stays on the old bubble
-    assert len(cb.answer.items) == 1  # callback acknowledged once
-    assert cb.message.bot.delete_message.items == []  # a press deletes nothing
+    assert kw.get("reply_markup") is None
+    assert len(cb.answer.items) == 1
+    assert cb.message.bot.delete_message.items == []
     assert await _line(h, rid) == stored
-
-
-# ------------------------------------------------- V3 (S6.3/S6.4 extraction)
 
 
 async def test_v3_code_block_shows_current_description_and_tags_exactly(h):
@@ -364,11 +355,7 @@ async def test_v3_unparseable_row_degrades_gracefully(h):
         assert result.replies == (EDIT_UNAVAILABLE,)
         assert pending_edits.get_marker(rid) is None
     result = await h["flow"].handle_text(USER, "verifier", "anything")
-    # flow-interrupt-rearm S1: un-armed CONFIRMING text now gets the prompt.
     assert result.replies == (FLOW_INTERRUPTED,)
-
-
-# ------------------------------------------ V4 (byte-faithful edit pipeline)
 
 
 async def test_v4_description_edit_rebuild_is_canonical_and_byte_faithful(h):
@@ -377,8 +364,8 @@ async def test_v4_description_edit_rebuild_is_canonical_and_byte_faithful(h):
     await _press(h, "d")
     result = await h["flow"].handle_text(USER, "verifier", "A sharpened probe description")
     expected = build_entry_line(UNI_NAME, URL, "A sharpened probe description", "tool", ["linux"])
-    assert await _line(h, rid) == expected  # persisted == independent rebuild
-    assert result.replies == (f"{PREVIEW}\n{expected}",)  # confirmation re-sent
+    assert await _line(h, rid) == expected
+    assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert isinstance(result.keyboard, ConfirmKB) and result.keyboard.folder == CHOSEN
     assert result.parse_mode is None and result.new_message is False
     assert (await _row(h, rid)).state == "CONFIRMING"
@@ -390,7 +377,7 @@ async def test_v4_repasting_current_description_is_byte_identical(h):
     parsed = parse_entry_line(stored)
     await _press(h, "d")
     result = await h["flow"].handle_text(USER, "verifier", parsed.description)
-    assert await _line(h, rid) == stored  # idempotent no-op edit
+    assert await _line(h, rid) == stored
     assert result.replies == (f"{PREVIEW}\n{stored}",)
 
 
@@ -403,7 +390,7 @@ async def test_v4_url_in_description_stays_out_of_the_link_slot(h):
     await h["flow"].handle_text(USER, "verifier", paste)
     line = await _line(h, rid)
     expected = build_entry_line(parsed.name, URL, paste, "tool", ["linux"])
-    assert line == expected  # link slot = reviewed resource.url, paste only in text
+    assert line == expected
     assert f"]({URL})" in line
 
 
@@ -412,21 +399,17 @@ async def test_v4_tags_edit_keeps_name_url_description(h):
     await _craft(h, rid)
     await _press(h, "t")
     result = await h["flow"].handle_text(USER, "verifier", "type:lab paid docker")
-    # S4: the pasted legacy `paid` word is dropped; the edit keeps name/url/desc.
     expected = build_entry_line(UNI_NAME, URL, UNI_DESC, "lab", ["docker"])
     assert await _line(h, rid) == expected
     assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert isinstance(result.keyboard, ConfirmKB)
 
 
-# ------------------------------------------------ V5 (previous-card deletion)
-
-
 async def test_v5_success_deletes_exactly_the_pressed_card_once(h):
     await _to_confirming(h)
     await _press(h, "d", chat_id=111, message_id=222)
     result = await h["flow"].handle_text(USER, "verifier", "New value one")
-    assert result.delete_outgoing == ((111, 222),)  # exactly one, captured at the press
+    assert result.delete_outgoing == ((111, 222),)
     await _press(h, "t", chat_id=333, message_id=444)
     result = await h["flow"].handle_text(USER, "verifier", "type:tool free linux")
     assert result.delete_outgoing == ((333, 444),)
@@ -437,11 +420,10 @@ async def test_v5_rejection_and_missing_ids_delete_nothing(h):
     await _press(h, "t", chat_id=111, message_id=222)
     rejected = await h["flow"].handle_text(USER, "verifier", "free linux")
     assert rejected.delete_outgoing == ()
-    # press with no captured ids: a successful edit must not fabricate a target
     await h["flow"].handle_callback(USER, "verifier", "d")
     ok = await h["flow"].handle_text(USER, "verifier", "No ids captured")
     assert ok.delete_outgoing == ()
-    assert ok.keyboard is not None  # the edit itself still succeeded
+    assert ok.keyboard is not None
 
 
 async def test_v5_confirm_and_cancel_delete_nothing(h):
@@ -451,7 +433,6 @@ async def test_v5_confirm_and_cancel_delete_nothing(h):
     confirmed = await h["flow"].handle_confirm(USER)
     assert confirmed.delete_outgoing == ()
     assert (await _row(h, rid)).state == "COMMITTED"
-    # Distinct link: the second submission must not hit the intake duplicate gate.
     rid2 = await _to_confirming(h, "https://github.com/VerifyOrg/probe-repo-2")
     await _press(h, "t")
     cancelled = await h["flow"].handle_cancel(USER)
@@ -462,32 +443,29 @@ async def test_v5_confirm_and_cancel_delete_nothing(h):
 async def test_v5_marker_replacement_tracks_only_the_latest_card(h):
     await _to_confirming(h)
     await _press(h, "d", chat_id=111, message_id=1)
-    await _press(h, "t", chat_id=222, message_id=2)  # replaces the marker
+    await _press(h, "t", chat_id=222, message_id=2)
     result = await h["flow"].handle_text(USER, "verifier", "type:tool free linux")
-    assert result.delete_outgoing == ((222, 2),)  # never both, never anything else
+    assert result.delete_outgoing == ((222, 2),)
 
 
 async def test_v5_telegram_delete_failure_is_best_effort(h):
     msg = _duck_text_message("paste")
     result = FlowResult(("one", "two"), delete_outgoing=((CHAT, CARD),))
-    await handlers._send(msg, h["deps"], result)  # must not raise
-    assert [a[0][0] for a in msg.answer.items] == ["one", "two"]  # replies still sent
-    assert msg.bot.calls == [(CHAT, CARD)]  # deletion attempted exactly once
+    await handlers._send(msg, h["deps"], result)
+    assert [a[0][0] for a in msg.answer.items] == ["one", "two"]
+    assert msg.bot.calls == [(CHAT, CARD)]
 
 
 async def test_v5_delete_failure_does_not_break_the_edit_flow(h):
     rid = await _to_confirming(h)
     await _press(h, "d")
     msg = _duck_text_message("Survives an API failure")
-    await handlers.on_text(msg, h["deps"], h["flow"])  # must not raise
+    await handlers.on_text(msg, h["deps"], h["flow"])
     texts = [a[0][0] for a in msg.answer.items]
-    assert any(t.startswith(PREVIEW) for t in texts)  # the new card still went out
-    assert "Survives an API failure" in await _line(h, rid)  # the edit still persisted
+    assert any(t.startswith(PREVIEW) for t in texts)
+    assert "Survives an API failure" in await _line(h, rid)
     assert (await _row(h, rid)).state == "CONFIRMING"
     assert msg.bot.calls == [(CHAT, CARD)]
-
-
-# ------------------------------------------------------ V6 (marker lifecycle)
 
 
 async def test_v6_text_without_marker_asks_continue_or_cancel_row_untouched(h):
@@ -495,9 +473,9 @@ async def test_v6_text_without_marker_asks_continue_or_cancel_row_untouched(h):
     before = await _digest(h, rid)
     whole_bullet = "- [X](https://x.example/) - pasted bullet. `type:tool` `free`"
     result = await h["flow"].handle_text(USER, "verifier", whole_bullet)
-    assert result.replies == (FLOW_INTERRUPTED,)  # S1: the paste is never intercepted
+    assert result.replies == (FLOW_INTERRUPTED,)
     assert isinstance(result.keyboard, ResumeKB)
-    assert await _digest(h, rid) == before  # whole-bullet paste is NOT intercepted
+    assert await _digest(h, rid) == before
 
 
 async def test_v6_restart_loses_marker_and_falls_back(h):
@@ -505,9 +483,9 @@ async def test_v6_restart_loses_marker_and_falls_back(h):
     before = await _digest(h, rid)
     await _press(h, "d")
     assert pending_edits.get_marker(rid) is not None
-    pending_edits.clear_all()  # simulates the process restart (S6.5)
+    pending_edits.clear_all()
     result = await h["flow"].handle_text(USER, "verifier", "late paste after restart")
-    assert result.replies == (FLOW_INTERRUPTED,)  # S1: restart dropped marker AND arm
+    assert result.replies == (FLOW_INTERRUPTED,)
     assert await _digest(h, rid) == before
 
 
@@ -533,7 +511,7 @@ async def test_v6_d_then_t_sequence_round_trips(h):
     assert second.delete_outgoing == ((111, 11),)
     line = await _line(h, rid)
     assert "Round one description" in line
-    assert "`type:tool` `docker`" in line  # S4: pasted `paid` is a legacy word, dropped
+    assert "`type:tool` `docker`" in line
 
 
 async def test_v6_repeated_edits_delete_exactly_one_card_each(h):
@@ -544,9 +522,6 @@ async def test_v6_repeated_edits_delete_exactly_one_card_each(h):
         result = await h["flow"].handle_text(USER, "verifier", f"Round {i} description")
         deletes.append(result.delete_outgoing)
     assert deletes == [((111, 100),), ((111, 101),), ((111, 102),)]
-
-
-# ------------------------------------------------------- V7 (rejection table)
 
 
 async def test_v7_description_rejections_specific_retry_byte_identical(h):
@@ -564,13 +539,13 @@ async def test_v7_description_rejections_specific_retry_byte_identical(h):
     }
     for paste, needle in cases.items():
         result = await h["flow"].handle_text(USER, "verifier", paste)
-        assert len(result.replies) == 3, paste  # one specific error + instruction + value
+        assert len(result.replies) == 3, paste
         assert needle in result.replies[0], (paste, result.replies[0])
-        assert result.replies[-1] == f"<pre>{UNI_DESC}</pre>", paste  # prompt re-offered
+        assert result.replies[-1] == f"<pre>{UNI_DESC}</pre>", paste
         assert result.delete_outgoing == (), paste
         assert result.keyboard is None, paste
         assert (await _row(h, rid)).state == "CONFIRMING", paste
-        assert await _digest(h, rid) == before, paste  # row byte-identical
+        assert await _digest(h, rid) == before, paste
         marker = pending_edits.get_marker(rid)
         assert marker is not None and marker.mode == "description", paste
 
@@ -595,7 +570,7 @@ async def test_v7_tags_rejections_specific_retry_byte_identical(h):
         assert result.replies[-1] == "<pre>`type:tool` `linux`</pre>", paste
         assert result.delete_outgoing == (), paste
         assert result.keyboard is None, paste
-        assert await _digest(h, rid) == before, paste  # row byte-identical
+        assert await _digest(h, rid) == before, paste
         marker = pending_edits.get_marker(rid)
         assert marker is not None and marker.mode == "tags", paste
         assert (await _row(h, rid)).state == "CONFIRMING", paste
@@ -622,12 +597,9 @@ async def test_v7_duplicate_tags_are_deduped_and_accepted(h):
     await _press(h, "t")
     result = await h["flow"].handle_text(USER, "verifier", "type:tool free linux linux linux")
     expected = build_entry_line(parsed.name, URL, parsed.description, "tool", ["linux"])
-    assert await _line(h, rid) == expected  # byte-identical rebuild (S6.4 dedupe)
+    assert await _line(h, rid) == expected
     assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert result.delete_outgoing == ((CHAT, CARD),)
-
-
-# ------------------------------------------- V8 (S4.5/S4.6/S6.7 preservation)
 
 
 async def test_v8_edited_entry_committed_verbatim(h):
@@ -642,7 +614,7 @@ async def test_v8_edited_entry_committed_verbatim(h):
     await h["flow"].handle_confirm(USER)
     call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]
     assert call[1] == f"{CHOSEN}/README.md"
-    assert call[2] == expected  # S4.5: the edited line, verbatim
+    assert call[2] == expected
     assert (await _row(h, rid)).state == "COMMITTED"
 
 
@@ -668,12 +640,9 @@ async def test_v8_tampered_folder_rejected_after_edit(h):
     calls_before = len(h["gh"].calls)
     result = await h["flow"].handle_confirm(USER)
     assert "nothing was committed" in "\n".join(result.replies).lower()
-    assert len(h["gh"].calls) == calls_before  # GitHub never called
+    assert len(h["gh"].calls) == calls_before
     assert (await _row(h, rid)).state == "CONFIRMING"
     assert await _audit(h, "commit_rejected")
-
-
-# ------------------------------------------- V10 (L7-R1 analogue on the guard)
 
 
 async def test_v10_no_edit_path_persists_a_bracket_bearing_description(h):
@@ -684,11 +653,10 @@ async def test_v10_no_edit_path_persists_a_bracket_bearing_description(h):
         result = await h["flow"].handle_text(USER, "verifier", paste)
         assert "can't contain" in result.replies[0], paste
         assert await _digest(h, rid) == before, paste
-    # the tags field can never smuggle a description either
     await _press(h, "t")
     result = await h["flow"].handle_text(USER, "verifier", "type:tool free linux")
     line = await _line(h, rid)
-    assert line.count("[") == 1 and line.count("]") == 1  # only the canonical name link
+    assert line.count("[") == 1 and line.count("]") == 1
 
 
 async def test_v10_repo_meta_bracket_advisory(h):
@@ -708,4 +676,4 @@ async def test_v10_repo_meta_bracket_advisory(h):
     await flow.handle_text(USER, "verifier", "linux")
     rid = await _rid(h)
     line = await _line(h, rid)
-    assert "[markdown](https://evil.example/)" in line  # ADVISORY: pre-existing
+    assert "[markdown](https://evil.example/)" in line

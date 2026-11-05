@@ -82,11 +82,8 @@ async def _send(message: Message, deps: AppDeps, result: FlowResult) -> None:
         try:
             await message.delete()
         except TelegramAPIError:
-            pass  # deletion is best-effort; capture already happened
+            pass
     for chat_id, message_id in result.delete_outgoing:
-        # T4/S6.3: delete the previous confirmation card. The ids were captured
-        # from the user's own button press (never caller-supplied), and this is
-        # best-effort with the same swallow pattern (S6.5).
         try:
             await message.bot.delete_message(chat_id=chat_id, message_id=message_id)
         except TelegramAPIError:
@@ -101,16 +98,13 @@ async def _guard_message(
     username = (message.from_user.username or "") if message.from_user else ""
     verdict = precheck(deps, user_id)
     if verdict == "unauthorized":
-        await flow.handle_unauthorized(user_id, username)  # silent, audit only
+        await flow.handle_unauthorized(user_id, username)
         return False, user_id, username
     if verdict == "rate_limited":
-        await message.answer(SLOW_DOWN)  # the single allowed reply
+        await message.answer(SLOW_DOWN)
         await audit(deps.conn, "rate_limited", tg_user_id=user_id)
         return False, user_id, username
     return True, user_id, username
-
-
-# ------------------------------------------------------------------ commands
 
 
 @router.message(CommandStart())
@@ -153,9 +147,6 @@ async def cmd_stats(message: Message, deps: AppDeps, flow: ResourceFlow) -> None
     await _send(message, deps, await flow.handle_stats(user_id, username))
 
 
-# --------------------------------------------------------------------- text
-
-
 @router.message(F.text)
 async def on_text(message: Message, deps: AppDeps, flow: ResourceFlow) -> None:
     proceed, user_id, username = await _guard_message(message, deps, flow)
@@ -170,9 +161,6 @@ async def on_text(message: Message, deps: AppDeps, flow: ResourceFlow) -> None:
     await _send(message, deps, result)
 
 
-# ---------------------------------------------------------------- callbacks
-
-
 @router.callback_query()
 async def on_callback(callback: CallbackQuery, deps: AppDeps, flow: ResourceFlow) -> None:
     user_id = callback.from_user.id if callback.from_user else None
@@ -180,24 +168,20 @@ async def on_callback(callback: CallbackQuery, deps: AppDeps, flow: ResourceFlow
     verdict = precheck(deps, user_id)
     if verdict == "unauthorized":
         await flow.handle_unauthorized(user_id, username)
-        await callback.answer()  # acknowledge, say nothing (S9)
+        await callback.answer()
         return
     if verdict == "rate_limited":
-        await callback.answer(SLOW_DOWN)  # single toast, no message sent
+        await callback.answer(SLOW_DOWN)
         await audit(deps.conn, "rate_limited", tg_user_id=user_id)
         return
 
     card = callback.message
-    # T4/S6.2: the card ids come from the Telegram callback object itself; the
-    # flow only ever deletes what it captured from the user's own press.
     chat_id = getattr(getattr(card, "chat", None), "id", None)
     message_id = getattr(card, "message_id", None)
     result = await flow.handle_callback(
         user_id, username, callback.data or "", chat_id=chat_id, message_id=message_id
     )
     if result.new_message and result.replies and callback.message is not None:
-        # T4/S6.2: answer as fresh messages and leave the button bubble (and its
-        # ✅/❌ keyboard) untouched.
         last = len(result.replies) - 1
         for index, text in enumerate(result.replies):
             markup = render_keyboard(deps, result) if index == last else None

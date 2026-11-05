@@ -71,10 +71,6 @@ def body_of(recorder: Recorder, index: int) -> dict[str, Any]:
     return json.loads(recorder.requests[index].content.decode("utf-8"))
 
 
-# --------------------------------------------------------------------------- #
-# parse_repo_url (S3, S4)
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.parametrize(
     "url,expected",
     [
@@ -127,10 +123,6 @@ def test_parse_repo_url_accepts_boundary_lengths() -> None:
     assert parse_repo_url(f"https://github.com/{'o' * 39}/{'r' * 100}") == ("o" * 39, "r" * 100)
 
 
-# --------------------------------------------------------------------------- #
-# build_entry_line (S13)
-# --------------------------------------------------------------------------- #
-
 def test_build_entry_line_exact_output() -> None:
     line = build_entry_line(
         "Amass", "https://github.com/owasp-amass/amass", "Subdomain enumeration", "tool", ["linux"]
@@ -149,7 +141,6 @@ def test_build_entry_line_omits_optional_platforms() -> None:
 def test_build_entry_line_type_always_required() -> None:
     assert "`type:video`" in build_entry_line("V", "https://v.dev", "Talk", "video")
     assert set(ENTRY_TYPES) == {"tool", "course", "docs", "wordlist", "lab", "article", "video"}
-    # The old cost vocabulary survives only as the legacy strip list (S4).
     assert set(LEGACY_COST_TAGS) == {"free", "paid", "freemium"}
 
 
@@ -160,8 +151,6 @@ def test_build_entry_line_rejects_bad_type(bad_type: str) -> None:
 
 
 def test_build_entry_line_drops_cost_words_from_platform_tags() -> None:
-    # S1: the bot never emits a cost tag, not even when someone types one as
-    # a platform word; S4: old cost words are dropped silently, no error.
     line = build_entry_line("N", "https://n.dev", "Desc", "tool", ["free", "linux", "paid", "docker"])
     assert line.endswith("Desc. `type:tool` `linux` `docker`")
 
@@ -198,11 +187,6 @@ def test_build_entry_line_dedupes_platform_tags_keeping_order() -> None:
     assert line.endswith("Desc. `type:docs` `linux` `Windows` `docker`")
 
 
-# --------------------------------------------------------------------------- #
-# parse_entry_line (entry-bullet-edit-confirm S4.3/S4.4)
-# --------------------------------------------------------------------------- #
-
-#: A LEGACY bullet that still carries a cost tag — it must keep parsing (S4).
 CANONICAL = (
     "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
     "`type:tool` `free` `linux`"
@@ -228,7 +212,7 @@ def test_parse_entry_line_returns_fields() -> None:
         name="Amass",
         url="https://github.com/owasp-amass/amass",
         description="Subdomain enumeration",
-        tags=("type:tool", "free", "linux"),  # parse stays generic (S4)
+        tags=("type:tool", "free", "linux"),
     )
 
 
@@ -252,7 +236,7 @@ def test_parse_entry_line_is_frozen_dataclass() -> None:
 
 def test_parse_entry_line_returns_url_as_typed() -> None:
     parsed = parse_entry_line("- [N](https://Example.COM/AbC) — Desc. `type:tool`")
-    assert parsed.url == "https://Example.COM/AbC"  # host case preserved; flow compares via _canonical_url
+    assert parsed.url == "https://Example.COM/AbC"
     assert _canonical_url(parsed.url) == "example.com/AbC"
 
 
@@ -285,8 +269,6 @@ def test_parse_entry_line_roundtrip_is_idempotent(
 
 
 def test_rebuild_of_legacy_bullet_drops_cost_tag() -> None:
-    # S4: an old committed line with `free` parses, and any rebuild (edit or
-    # resubmission path) emits it back WITHOUT the cost tag.
     rebuilt = rebuild_entry_line(parse_entry_line(CANONICAL))
     assert rebuilt == (
         "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
@@ -365,10 +347,6 @@ def test_parse_entry_line_error_does_not_echo_payload() -> None:
     assert len(str(excinfo.value)) < 200
 
 
-# --------------------------------------------------------------------------- #
-# behavior preservation across the validation refactor (T1 differential guard)
-# --------------------------------------------------------------------------- #
-
 def test_build_entry_line_known_output_unchanged_after_shared_validation_refactor() -> None:
     assert build_entry_line(
         "Amass",
@@ -399,10 +377,6 @@ def test_canonical_url_still_usable() -> None:
     assert _canonical_url("https://example.com") == "example.com"
     assert _canonical_url("   ") == ""
 
-
-# --------------------------------------------------------------------------- #
-# insert_entry (S13)
-# --------------------------------------------------------------------------- #
 
 EXISTING = (
     "# Recon and OSINT\n"
@@ -546,10 +520,6 @@ def test_insert_entry_subsection_heading_is_not_the_section_end() -> None:
     assert text.index("[Mmm]") < text.index("### Tools")
 
 
-# --------------------------------------------------------------------------- #
-# leaf_template (A1)
-# --------------------------------------------------------------------------- #
-
 def test_leaf_template_exact_text() -> None:
     assert leaf_template("OSINT", "Open source intelligence resources.") == (
         "# OSINT\n"
@@ -591,10 +561,6 @@ def test_leaf_title_from_path() -> None:
     assert leaf_title_from_path("01_Recon_and_OSINT/Web2/README.md") == "Web2"
 
 
-# --------------------------------------------------------------------------- #
-# GitHubClient headers (S4, S8)
-# --------------------------------------------------------------------------- #
-
 async def test_headers_always_include_api_contract() -> None:
     recorder = Recorder([(200, {"full_name": TARGET})])
     client = client_for(recorder, token=None)
@@ -632,10 +598,6 @@ def test_rejects_invalid_target_repo() -> None:
     with pytest.raises(ValueError):
         GitHubClient(None, http, target_repo="not-a-repo")
 
-
-# --------------------------------------------------------------------------- #
-# repo_meta / readme (S3, S15)
-# --------------------------------------------------------------------------- #
 
 async def test_repo_meta_happy() -> None:
     recorder = Recorder(
@@ -719,10 +681,6 @@ async def test_network_failure_becomes_fetch_error() -> None:
     assert excinfo.value.public_hint is True
 
 
-# --------------------------------------------------------------------------- #
-# get_file (S16)
-# --------------------------------------------------------------------------- #
-
 async def test_get_file_returns_text_and_sha() -> None:
     content = "# OSINT\n\n## Resources\n\n- [Aaa](https://a.dev) — A. é\n"
     recorder = Recorder([(200, {"path": LEAF, "sha": "sha-1", "content": b64(content), "encoding": "base64"})])
@@ -754,10 +712,6 @@ async def test_get_file_directory_payload_raises() -> None:
     with pytest.raises(FetchError):
         await client.get_file(LEAF, "main")
 
-
-# --------------------------------------------------------------------------- #
-# put_file (S8, S16)
-# --------------------------------------------------------------------------- #
 
 async def test_put_file_payload_fields_exactly() -> None:
     content = "# OSINT\n\n## Resources\n\n- [Aaa](https://a.dev) — A.\n"
@@ -808,10 +762,6 @@ async def test_put_file_403_mentions_contents_write() -> None:
     assert "token" in message.lower()
     assert TOKEN not in message
 
-
-# --------------------------------------------------------------------------- #
-# commit_entry (S13, S16, A1)
-# --------------------------------------------------------------------------- #
 
 LEAF_README = (
     "# OSINT\n"
@@ -938,7 +888,6 @@ async def test_commit_entry_conflict_twice_raises() -> None:
 
 
 async def test_commit_entry_duplicate_after_conflict_raises() -> None:
-    # Someone else committed the same URL between our GET and PUT.
     refetched = LEAF_README + "- [Other](https://example.com/mmm) — taken. `type:tool` `free`\n"
     recorder = Recorder(
         [
@@ -951,9 +900,6 @@ async def test_commit_entry_duplicate_after_conflict_raises() -> None:
     with pytest.raises(DuplicateError):
         await client.commit_entry(LEAF, ENTRY, "main", "OSINT", "desc")
     assert len(recorder.requests) == 3
-
-
-# ------------------------------------------------- canonical_url_key (intake)
 
 
 def test_canonical_url_key_collapses_github_repo_variants() -> None:
@@ -973,5 +919,4 @@ def test_canonical_url_key_non_github_uses_compare_form() -> None:
     assert canonical_url_key("https://Example.com/a/") == "example.com/a"
     assert canonical_url_key("https://example.com/a") != canonical_url_key("https://example.com/b")
     assert canonical_url_key("https://example.com/a?x=1") == "example.com/a?x=1"
-    # GitHub URLs that are not repos stay on the generic form (S3 boundary)
     assert canonical_url_key("https://github.com/owner") == "github.com/owner"

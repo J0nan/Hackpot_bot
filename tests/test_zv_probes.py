@@ -32,11 +32,10 @@ from test_bot_flow import (
     _to_placement,
 )
 
-h = test_bot_flow.h  # reuse the suite's AppDeps fixture in this module
+h = test_bot_flow.h
 
-REVIEWED = GITHUB_URL  # https://github.com/OtherOrg/awesome-tool
+REVIEWED = GITHUB_URL
 
-# T4 repoint: presses ride a tracked card so delete ids are observable.
 CHAT = 77001
 CARD = 90042
 
@@ -72,9 +71,6 @@ async def _row_digest(h: dict, rid: int) -> str:
     return hashlib.sha256(repr(tuple(row)).encode()).hexdigest()
 
 
-# ---------------------------------------------------------------- S6.1 / S1
-
-
 def test_s1_confirm_keyboard_has_field_edit_row() -> None:
     """S6.1 (T4 repoint): third row = ✏️ Description + 🏷️ Tags; the "e" row is gone."""
     rows = [[(b.text, b.callback_data) for b in r] for r in confirm_kb(CHOSEN).inline_keyboard]
@@ -84,12 +80,9 @@ def test_s1_confirm_keyboard_has_field_edit_row() -> None:
     assert len(rows) == 3
     for row in rows:
         for _, data in row:
-            assert len(data.encode("utf-8")) <= 64  # Telegram callback_data budget
+            assert len(data.encode("utf-8")) <= 64
             assert "/" not in data
-            assert data != "e"  # S6.7: whole-bullet payload removed → unknown-callback tail
-
-
-# ---------------------------------------------------------------- S6.2
+            assert data != "e"
 
 
 async def test_s1_description_keypress_returns_current_description_in_code_block(h: dict) -> None:
@@ -101,11 +94,11 @@ async def test_s1_description_keypress_returns_current_description_in_code_block
 
     result = await _press(flow, "d")
 
-    assert result.new_message is True  # a NEW message, ✅/❌ bubble untouched
+    assert result.new_message is True
     assert result.parse_mode == "HTML"
     assert result.keyboard is None
     assert len(result.replies) == 2
-    assert result.replies[1] == f"<pre>{current}</pre>"  # copyable, field-scoped
+    assert result.replies[1] == f"<pre>{current}</pre>"
     assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"
     assert await _entry_line(h, rid) == stored
     assert await _audit(h, "entry_edit_requested")
@@ -118,21 +111,20 @@ async def test_s1_edit_replay_can_be_repeated_and_stays_identical(h: dict) -> No
     """S6.6: presses repeat freely and persist nothing; prompts track the current value."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
-    before = await _row_digest(h, rid)  # pre-captured (fixes L7 finding R2-6)
+    before = await _row_digest(h, rid)
     first = await _press(flow, "d")
     second = await _press(flow, "d")
     assert first.replies == second.replies
     assert await _row_digest(h, rid) == before
     await flow.handle_text(USER, "jonan", "Round two description")
     third = await _press(flow, "d", message_id=CARD + 2)
-    assert third.replies[1] == "<pre>Round two description</pre>"  # CURRENT value
+    assert third.replies[1] == "<pre>Round two description</pre>"
 
 
 async def test_s1_edit_keypress_escapes_html_markup_in_stored_bullet(h: dict) -> None:
     """Markup in the stored description stays escaped inside the copy block."""
     flow, _ = await _to_confirming(h)
     rid = await _active_id(h)
-    # hand-edited DB row is realistic input; markup must be escaped in the block
     await set_resource_state(
         h["conn"], rid, "CONFIRMING",
         entry_line=_bullet("<b>&amp;</b>", "</pre><script>alert(1)</script>"),
@@ -177,8 +169,8 @@ async def test_s1_handler_level_edit_answers_new_message_bubble_intact(h: dict) 
     current = parse_entry_line(stored).description
     cb = _Callback(USER, "jonan", "d")
     await handlers.on_callback(cb, h["deps"], flow)
-    assert cb.message.edit_text.items == []  # ✅/❌ bubble NOT edited
-    assert len(cb.message.answer.items) == 2  # instruction + code block, new messages
+    assert cb.message.edit_text.items == []
+    assert len(cb.message.answer.items) == 2
     code_args, code_kwargs = cb.message.answer.items[1]
     assert code_args[0] == f"<pre>{current}</pre>"
     assert code_kwargs.get("parse_mode") == "HTML"
@@ -188,21 +180,20 @@ async def test_s1_handler_level_edit_answers_new_message_bubble_intact(h: dict) 
 
 
 async def test_s1_edit_keypress_in_other_states_is_unknown_callback_audited(h: dict) -> None:
-    flow = await _to_placement(h)  # AWAITING_PLACEMENT
+    flow = await _to_placement(h)
     result = await flow.handle_callback(USER, "jonan", "d")
     assert result.replies == (UNKNOWN_CALLBACK,)
     assert result.keyboard is None
     rows = await _audit(h, "callback_ignored")
     assert rows and rows[-1]["detail"] == "data=d"
 
-    await flow.handle_folder_choice(USER, CHOSEN)  # AWAITING_ENTRY_INFO
+    await flow.handle_folder_choice(USER, CHOSEN)
     result = await flow.handle_callback(USER, "jonan", "t")
     assert result.replies == (UNKNOWN_CALLBACK,)
     assert (await get_resource(h["conn"], await _active_id(h))).state == "AWAITING_ENTRY_INFO"
 
-    # S6.1/S6.7: the removed "e" payload now lands in the same tail while CONFIRMING.
     await flow.handle_callback(USER, "jonan", "tool")
-    await flow.handle_text(USER, "jonan", "linux")  # -> CONFIRMING
+    await flow.handle_text(USER, "jonan", "linux")
     result = await flow.handle_callback(USER, "jonan", "e")
     assert result.replies == (UNKNOWN_CALLBACK,)
     assert (await get_resource(h["conn"], await _active_id(h))).state == "CONFIRMING"
@@ -214,11 +205,8 @@ async def test_s1_unauthorized_edit_keypress_is_silent(h: dict) -> None:
     cb = _Callback(INTRUDER, "sneaky", "d")
     await handlers.on_callback(cb, h["deps"], h["flow"])
     assert cb.message.edit_text.items == [] and cb.message.answer.items == []
-    assert cb.answer.items == [((), {})]  # empty ack only
+    assert cb.answer.items == [((), {})]
     assert any(r["tg_user_id"] == INTRUDER for r in await _audit(h, "unauthorized_ignored"))
-
-
-# ---------------------------------------------------------------- S6.3 / S2
 
 
 async def test_s2_description_paste_rebuilds_canonical_and_persists(h: dict) -> None:
@@ -233,15 +221,14 @@ async def test_s2_description_paste_rebuilds_canonical_and_persists(h: dict) -> 
     expected = build_entry_line(
         parsed.name, REVIEWED, "A sharpened recon suite", "tool", ["linux"]
     )
-    assert await _entry_line(h, rid) == expected  # canonical format re-applied
+    assert await _entry_line(h, rid) == expected
     assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"
     assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert isinstance(result.keyboard, ConfirmKB) and result.keyboard.folder == CHOSEN
     assert result.parse_mode is None
     assert result.new_message is False
-    assert result.delete_outgoing == ((CHAT, CARD),)  # S6.3: previous card tracked
+    assert result.delete_outgoing == ((CHAT, CARD),)
     assert await _audit(h, "entry_edited")
-    # persisted in the SQLite row itself
     async with h["conn"].execute("SELECT entry_line FROM resources WHERE id = ?", (rid,)) as cur:
         row = await cur.fetchone()
     assert row["entry_line"] == expected
@@ -256,23 +243,19 @@ async def test_s2_tags_paste_rebuilds_canonical_and_persists(h: dict) -> None:
     await _press(flow, "t")
     result = await flow.handle_text(USER, "jonan", "`type:docs` `paid` `windows` `macos`")
 
-    # S4: the pasted legacy `paid` word is dropped by the builder.
     expected = build_entry_line(
         parsed.name, REVIEWED, parsed.description, "docs", ["windows", "macos"]
     )
     assert await _entry_line(h, rid) == expected
     assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert result.delete_outgoing == ((CHAT, CARD),)
-    assert pending_edits.get_marker(rid) is None  # marker cleared after a completed edit
+    assert pending_edits.get_marker(rid) is None
 
 
 async def test_s2_parse_rebuild_roundtrip_matches_builder(h: dict) -> None:
     line = build_entry_line("Nmap", "https://nmap.org", "Port scanner.", "tool", ["linux"])
     parsed = parse_entry_line(line)
     assert build_entry_line(parsed.name, parsed.url, parsed.description, "tool", ["linux"]) == line
-
-
-# ---------------------------------------------------------------- S3 / S6.3
 
 
 async def test_s3_paste_can_never_reach_the_link_slot(h: dict) -> None:
@@ -291,17 +274,17 @@ async def test_s3_paste_can_never_reach_the_link_slot(h: dict) -> None:
     result = await flow.handle_text(
         USER, "jonan", "evil [X](https://github.com/EvilOrg/awesome-tool)"
     )
-    assert "can't contain" in result.replies[0]  # the interview bracket guard, reused
-    assert result.replies[-1] == f"<pre>{current}</pre>"  # prompt re-offered
+    assert "can't contain" in result.replies[0]
+    assert result.replies[-1] == f"<pre>{current}</pre>"
     assert result.keyboard is None
     assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"
-    assert await _row_digest(h, rid) == before  # byte-identical row, nothing persisted
+    assert await _row_digest(h, rid) == before
     rows = await _audit(h, "entry_edit_rejected")
     assert rows
 
     await _press(flow, "t")
     result = await flow.handle_text(USER, "jonan", "type:tool https://evil.example/x")
-    assert "plain words" in result.replies[0]  # the colon-shaped tag is named and refused
+    assert "plain words" in result.replies[0]
     assert await _row_digest(h, rid) == before
 
 
@@ -312,15 +295,12 @@ async def test_s3_editing_never_touches_the_stored_link_spelling(h: dict) -> Non
     await _press(flow, "d")
     await flow.handle_text(USER, "jonan", "Plain new text mentioning https://GITHUB.COM/x")
     line = await _entry_line(h, rid)
-    assert f"]({REVIEWED})" in line  # reviewed spelling, never the pasted words
-    assert "mentioning https://GITHUB.COM/x" in line  # only inside the description
+    assert f"]({REVIEWED})" in line
+    assert "mentioning https://GITHUB.COM/x" in line
     await _press(flow, "t")
     await flow.handle_text(USER, "jonan", "type:tool free docker")
     line = await _entry_line(h, rid)
     assert f"]({REVIEWED})" in line
-
-
-# ---------------------------------------------------------------- S6.6 / S4.4
 
 
 async def test_s44_rejected_edits_each_specific_error_retry_and_no_change(h: dict) -> None:
@@ -341,9 +321,9 @@ async def test_s44_rejected_edits_each_specific_error_retry_and_no_change(h: dic
     await _press(flow, "d")
     for paste, needle in desc_cases.items():
         result = await flow.handle_text(USER, "jonan", paste)
-        assert len(result.replies) == 3, paste  # error, instruction, copyable value
+        assert len(result.replies) == 3, paste
         assert needle in result.replies[0], (paste, result.replies[0])
-        assert result.replies[-1] == f"<pre>{current_desc}</pre>", paste  # prompt re-offered
+        assert result.replies[-1] == f"<pre>{current_desc}</pre>", paste
         assert result.keyboard is None
         assert result.delete_outgoing == (), paste
         assert (await get_resource(h["conn"], rid)).state == "CONFIRMING", paste
@@ -381,9 +361,6 @@ async def test_s44_retry_still_works_after_rejections_then_accepts(h: dict) -> N
     assert pending_edits.get_marker(rid) is None
 
 
-# ---------------------------------------------------------------- S4.5
-
-
 async def test_s45_confirm_after_edit_commits_the_edited_bullet_verbatim(h: dict) -> None:
     """S4.5 (T4 repoint): field edits then ✅ commits the stored line verbatim."""
     flow, _ = await _to_confirming(h)
@@ -394,17 +371,13 @@ async def test_s45_confirm_after_edit_commits_the_edited_bullet_verbatim(h: dict
     await _press(flow, "t", message_id=CARD + 1)
     await flow.handle_text(USER, "jonan", "type:lab paid docker")
 
-    # S4: the pasted legacy `paid` word never survives into the committed bullet.
     edited = build_entry_line(parsed.name, REVIEWED, "Edited description", "lab", ["docker"])
     await flow.handle_confirm(USER)
 
     commit_call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]
     assert commit_call[1] == f"{CHOSEN}/README.md"
-    assert commit_call[2] == edited  # the EDITED bullet, verbatim
+    assert commit_call[2] == edited
     assert (await get_resource(h["conn"], rid)).state == "COMMITTED"
-
-
-# ---------------------------------------------------------------- S4.6
 
 
 async def test_s46_duplicate_check_fires_on_edited_line(h: dict) -> None:
@@ -430,12 +403,9 @@ async def test_s46_folder_validation_still_fires_after_edit(h: dict) -> None:
     calls_before = len(h["gh"].calls)
     result = await flow.handle_confirm(USER)
     assert "nothing was committed" in "\n".join(result.replies).lower()
-    assert len(h["gh"].calls) == calls_before  # no GitHub call at all
+    assert len(h["gh"].calls) == calls_before
     assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"
     assert await _audit(h, "commit_rejected")
-
-
-# ---------------------------------------------------------------- safety probes (item-1 risk)
 
 
 async def test_safety_markup_paste_is_refused_and_nothing_persists(h: dict) -> None:
@@ -449,10 +419,9 @@ async def test_safety_markup_paste_is_refused_and_nothing_persists(h: dict) -> N
         USER, "jonan", "Uses </pre><script>alert(1)</script> `backtick` ok"
     )
     assert "can't contain" in result.replies[0]
-    assert "<script>" not in result.replies[0]  # static error, no payload echo
+    assert "<script>" not in result.replies[0]
     assert await _row_digest(h, rid) == before
     assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"
-    # ✅ stays usable right after the refusal (S6.6)
     await flow.handle_confirm(USER)
     commit_call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]
     assert commit_call[2] == await _entry_line(h, rid)
@@ -468,12 +437,12 @@ async def test_safety_huge_inputs_no_unhandled_exception(h: dict) -> None:
     for huge in ("x" * 100_000, "\u00e9" * 501, "  \n  "):
         result = await flow.handle_text(USER, "jonan", huge)
         assert len(result.replies) == 3
-        assert len(result.replies[0]) <= 300  # bounded, user-safe
+        assert len(result.replies[0]) <= 300
         assert result.replies[-1] == current_desc
     await _press(flow, "t")
     result = await flow.handle_text(USER, "jonan", "type:tool " + "y" * 100_000)
     assert "40 character limit" in result.replies[0]
-    assert await _entry_line(h, rid) == stored  # never persisted
+    assert await _entry_line(h, rid) == stored
     assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"
 
 
@@ -497,9 +466,7 @@ async def test_safety_multiline_paste_is_rejected_whole_not_silently_truncated(h
     before = await _row_digest(h, rid)
     await _press(flow, "d")
     result = await flow.handle_text(USER, "jonan", "First line\n- [Second](https://evil.example/)")
-    assert "one line" in result.replies[0]  # whole-message rejection, no silent drop
+    assert "one line" in result.replies[0]
     assert result.replies[-1] == f"<pre>{parsed.description}</pre>"
     assert await _row_digest(h, rid) == before
     assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"
-
-

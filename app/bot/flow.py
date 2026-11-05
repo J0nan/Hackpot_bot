@@ -109,9 +109,9 @@ from app.services.github import (
     parse_repo_url,
 )
 
-README_EXCERPT_CHARS = 6000  # L7-2 excerpt cap handed to the decision model
+README_EXCERPT_CHARS = 6000
 SUMMARY_MAX_CHARS = 6000
-_STATS_DISPLAY_LIMIT = 10  # /stats renders at most this many rows per board
+_STATS_DISPLAY_LIMIT = 10
 
 
 def _medal(rank: int) -> str:
@@ -122,21 +122,14 @@ def _links_noun(count: int) -> str:
     return f"{count} {'link' if count == 1 else 'links'}"
 _NAME_MAX = 120
 _DESC_MAX = 500
-_MAX_CONTEXT_CHARS = 2 * SUMMARY_MAX_CHARS  # stored-context cap across retries
+_MAX_CONTEXT_CHARS = 2 * SUMMARY_MAX_CHARS
 IV_FIELDS: tuple[str, ...] = ("name", "description", "type", "platforms")
-NEEDS_ADMIN_THRESHOLD = 0.5  # S7
+NEEDS_ADMIN_THRESHOLD = 0.5
 
 URL_RE = re.compile(r"https?://\S+")
-# Intake duplicate gate (L12): every state except FAILED/CANCELLED can hold a
-# live or placed submission — the check is global, across all users.
 DUPLICATE_ELIGIBLE_STATES: tuple[str, ...] = ACTIVE_STATES + ("COMMITTED",)
 _TOKEN_SPLIT_RE = re.compile(r"[\s,;]+")
 _PLATFORM_UNSAFE = set("`|'\"\\[](){}")
-# L11-a: callback indices are ASCII digits only, in canonical spelling. int()
-# alone would happily take " 1", "+1", "1_0" and even Arabic-Indic digits ("١"),
-# and "^\d+$" alone would still take "01" — so the shape is matched first, then
-# the round-trip. Keyboards only ever emit str(i), so any other spelling of the
-# same index is a hand-made payload and is rejected like "c:abc".
 _INDEX_RE = re.compile(r"^\d+$", re.ASCII)
 
 ProgressSink = Callable[[str], Awaitable[None]]
@@ -148,7 +141,6 @@ def _transition(resource_id: Any, old: str, new: str) -> None:
     """S5: DEBUG state transition with the ``res=<id>`` correlation token."""
     logger.debug("state res=%s %s->%s", resource_id, old, new)
 
-# --- user-visible wording (short, safe, no internals, never a secret) -------- #
 SLOW_DOWN = "You are sending too fast — please slow down and try again in a minute."
 ASK_PAT_START = (
     "👋 Welcome, Hackpoter! First, send me your GitHub Personal Access Token "
@@ -200,13 +192,11 @@ ALREADY_IN_PROGRESS = (
     "⚠️ That link is already being processed (resource #{resource_id}{folder_part}). "
     "It has not been committed yet — try again once it finishes."
 )
-# repo-mirror-dedup S1: the URL is listed in the target repo but the bot never
-# saw it (added by hand or by another tool) — the mirror says so at intake.
 ALREADY_COMMITTED_OUTSIDE = (
     "⚠️ That link is already listed in 📁 {folder} of the Hackpot repo "
     "(added outside this bot) — nothing new was created."
 )
-ANALYZING = "🤔 Analyzing… send /cancel anytime"  # L7-4: shown before the slow call
+ANALYZING = "🤔 Analyzing… send /cancel anytime"
 DECISION_UNRELIABLE_USER = (
     "🤖 The decision model did not return a reliable result — nothing was "
     "suggested. Send a few words about this resource and I'll classify it "
@@ -263,8 +253,6 @@ CONFIRMING_HINT = (
     "Use the buttons above — ✅ Commit, ❌ Cancel, or ✏️ Description / 🏷️ Tags "
     "to edit one field before committing — or /cancel to abort."
 )
-# T4 (entry-bullet-edit-confirm, S5/S6): ✏️ Description / 🏷️ Tags wording,
-# user-safe and static — current values ride in their own escaped code block.
 EDIT_DESC_ASK = (
     "✏️ Copy the current description below, modify it (one line, no [ ] or "
     "backticks, at most 500 characters), then send the new description back. "
@@ -297,7 +285,7 @@ EDIT_TAGS_COLON = (
     "be a `type:` tag — fix it and send the tags again."
 )
 EDIT_UNAVAILABLE = "This entry can't be prepared for editing right now — use ✅ to commit or ❌ to cancel."
-EDIT_RETRY_DETAIL_MAX = 200  # cap for a validator-error line echoed back for retry
+EDIT_RETRY_DETAIL_MAX = 200
 FORGOTTEN = "🧹 Your stored GitHub token was deleted. /start to save a new one."
 DECRYPT_FAILED = (
     "Your stored GitHub token could not be decrypted. Use /forget, then /start "
@@ -305,17 +293,12 @@ DECRYPT_FAILED = (
 )
 UNKNOWN_CALLBACK = "That button is no longer available — /start or send the link again."
 COMMIT_PUBLIC_REMINDER = " Remember: all links must be public."
-# flow-interrupt-rearm (S1 + S4): shown for a text update the CURRENT step
-# cannot use (button-driven steps); the buttons decide — ▶️ Continue re-sends
-# the step's message, ❌ Cancel drops it.
 FLOW_INTERRUPTED = (
     "⏸️ The step I am waiting on is driven by buttons, so I did not treat "
     "that message as an answer. Press ▶️ Continue to re-send the current "
     "step's message (its card may also invite a text reply), or ❌ Cancel "
     "to drop this resource (or use /cancel anytime)."
 )
-
-# --- keyboard specs (plain data; handlers render them via app.bot.keyboards) - #
 
 
 @dataclass(frozen=True)
@@ -410,9 +393,6 @@ def make_decision_factory(
     return factory
 
 
-# --- interview state helpers -------------------------------------------------- #
-
-
 def _dump_iv(iv: dict[str, Any]) -> str:
     return json.dumps(iv, sort_keys=True)
 
@@ -434,7 +414,7 @@ def _first_paragraph(text: str) -> str:
     return sanitize_line(para, _DESC_MAX)
 
 
-PARSE_HTML = "HTML"  # per-result parse mode (T4); the bot default stays unset
+PARSE_HTML = "HTML"
 
 
 def _html_escape(text: str) -> str:
@@ -454,7 +434,6 @@ class ResourceFlow:
     def __init__(self, deps: AppDeps) -> None:
         self.deps = deps
 
-    # -- primitives ----------------------------------------------------------- #
 
     async def _touch(self, user_id: int | None, username: str | None) -> None:
         if isinstance(user_id, int) and not isinstance(user_id, bool):
@@ -490,7 +469,6 @@ class ResourceFlow:
         except Exception:  # noqa: BLE001 - progress is optional UX, not a gate
             pass
 
-    # -- entry points ---------------------------------------------------------- #
 
     async def handle_start(self, user_id: int, username: str) -> FlowResult:
         await self._touch(user_id, username)
@@ -500,8 +478,6 @@ class ResourceFlow:
         replies.append(ASK_PAT_START if stored is None else GREETING_READY)
         active = await self._active(user_id)
         if active is not None:
-            # flow-interrupt-rearm S1: /start during a flow offers the same
-            # two buttons the text guard uses, instead of free-text advice.
             replies.append(FLOW_INTERRUPTED)
             return FlowResult(tuple(replies), ResumeKB())
         return FlowResult(tuple(replies))
@@ -525,15 +501,11 @@ class ResourceFlow:
 
         state = active.state
         if state == "CONFIRMING" and pending_edits.get_marker(active.id) is not None:
-            # T4/S6.3 + flow-interrupt-rearm S4: the ✏️/🏷️ press already
-            # asked for this exact paste-back; it never goes through the gate.
             return await self._handle_confirming_text(user_id, active, text)
         if not self._step_takes_text(active) and not rearm.is_armed(user_id):
-            # S1 + S4: ONLY a text the current step cannot use asks Continue/
-            # Cancel first; the message itself is deliberately not processed.
             await self._log("flow_interrupted", user_id, active.id, detail=f"state={state}")
             return FlowResult((FLOW_INTERRUPTED,), ResumeKB())
-        rearm.disarm(user_id)  # S5: an armed button-step ask pays for one message
+        rearm.disarm(user_id)
         if state == "NEED_TOKEN":
             if looks_like_token(text):
                 return await self._capture_pat(user_id, text.strip(), resume=active, progress=progress)
@@ -545,15 +517,12 @@ class ResourceFlow:
             if await self._latest_decision_unreliable(active.id) and not (
                 manual_placement.is_marked(active.id)
             ):
-                # unreliable-decision-retry S2: the armed text adds context and re-classifies
                 return await self._retry_with_context(user_id, active, text, progress)
             return FlowResult((PLACEMENT_HINT,))
         if state == "AWAITING_ENTRY_INFO":
             return await self._interview_text(user_id, active, text)
         if state == "CONFIRMING":
-            # T4 (S6.3/S6.5): paste-back only while a field-edit marker is set.
             return await self._handle_confirming_text(user_id, active, text)
-        # Anything unexpected: buttons drive the next step.
         return FlowResult((CONFIRMING_HINT,))
 
     def _step_takes_text(self, resource: Any) -> bool:
@@ -590,8 +559,6 @@ class ResourceFlow:
         callback object itself — they are never derived from user text."""
         await self._touch(user_id, username)
         data = (data or "").strip()
-        # flow-interrupt-rearm S3: any press replaces the armed text answer
-        # ("keep" re-arms through handle_resume below).
         if isinstance(user_id, int) and not isinstance(user_id, bool):
             rearm.disarm(user_id)
         if data == "keep":
@@ -616,8 +583,6 @@ class ResourceFlow:
         if data == "❌":
             return await self.handle_cancel(user_id)
         if data in ("d", "t"):
-            # S6.2: field edits are only a CONFIRMING action; anywhere else the
-            # tail below audits them as the unknown callbacks they are.
             confirming = await self._active(user_id)
             if confirming is not None and confirming.state == "CONFIRMING":
                 mode = pending_edits.DESCRIPTION if data == "d" else pending_edits.TAGS
@@ -662,7 +627,6 @@ class ResourceFlow:
             return folders[index]
         return None
 
-    # -- resume (flow-interrupt-rearm, S2) ---------------------------------------- #
 
     async def handle_resume(self, user_id: int) -> FlowResult:
         """▶️ Continue: re-send the current step's message (S2).
@@ -689,14 +653,13 @@ class ResourceFlow:
             return FlowResult((ASK_SUMMARY,))
         if state == "NEW":
             if resource.context:
-                return await self.handle_decision(user_id)  # decision not run yet
+                return await self.handle_decision(user_id)
             return FlowResult((USAGE_HINT,))
         if state == "AWAITING_PLACEMENT":
             if (
                 await self._latest_decision_unreliable(resource.id)
                 and not manual_placement.is_marked(resource.id)
             ):
-                # unreliable-decision-retry S4: the step re-shown is the ask as first shown
                 return await self._no_candidates_step(user_id, resource.id)
             return await self.handle_more_folders(user_id)
         if state == "AWAITING_ENTRY_INFO":
@@ -721,7 +684,6 @@ class ResourceFlow:
             )
         return FlowResult((CONFIRMING_HINT,))
 
-    # -- PAT capture (S8) ------------------------------------------------------- #
 
     async def _capture_pat(
         self, user_id: int, token: str, resume: Any, progress: ProgressSink | None = None
@@ -743,10 +705,8 @@ class ResourceFlow:
             _transition(resume.id, resume.state, "NEED_SUMMARY")
             await self._log("summary_requested", user_id, resume.id)
             next_step = FlowResult((ASK_SUMMARY,))
-        # the PAT message is always deleted after capture (S8)
         return FlowResult(next_step.replies, next_step.keyboard, delete_message=True)
 
-    # -- intake ----------------------------------------------------------------- #
 
     async def _ingest_link(
         self, user_id: int, raw_url: str, progress: ProgressSink | None
@@ -760,8 +720,6 @@ class ResourceFlow:
         duplicate = await self._find_duplicate(url)
         if duplicate is not None:
             return await self._duplicate_result(user_id, duplicate)
-        # repo-mirror-dedup S1: DB rows first (they carry live-flow detail),
-        # then the repo mirror — links the repo has but the bot never saw.
         mirror = await find_mirror_link(self.deps.conn, canonical_url_key(url))
         if mirror is not None:
             await self._log("duplicate_mirror", user_id, detail=f"folder={mirror.folder}")
@@ -822,7 +780,7 @@ class ResourceFlow:
         self, user_id: int, resource: Any, token: str, progress: ProgressSink | None = None
     ) -> FlowResult:
         parsed = parse_repo_url(resource.url)
-        if parsed is None:  # kind said github but URL no longer parses: treat as other
+        if parsed is None:
             await set_resource_state(self.deps.conn, resource.id, "NEED_SUMMARY")
             _transition(resource.id, resource.state, "NEED_SUMMARY")
             return FlowResult((ASK_SUMMARY,))
@@ -831,7 +789,7 @@ class ResourceFlow:
         try:
             meta = await client.repo_meta(owner, repo)
             readme = await client.readme(owner, repo)
-        except FetchError as exc:  # L7-5: detail with status stays in the audit row
+        except FetchError as exc:
             safe = str(exc)
             await set_resource_state(self.deps.conn, resource.id, "NEED_SUMMARY", error=safe)
             _transition(resource.id, resource.state, "NEED_SUMMARY")
@@ -841,7 +799,7 @@ class ResourceFlow:
         await self._log("readme_fetched", user_id, resource.id, detail=f"repo={owner}/{repo}")
         logger.info("milestone=readme_fetched res=%s repo=%s/%s", resource.id, owner, repo)
         description = sanitize_line(str(meta.get("description") or ""), _DESC_MAX)
-        excerpt = readme[:README_EXCERPT_CHARS]  # L7-2
+        excerpt = readme[:README_EXCERPT_CHARS]
         context = "\n\n".join(part for part in (description, excerpt) if part)
         await set_resource_state(self.deps.conn, resource.id, "NEW", context=context)
         _transition(resource.id, resource.state, "NEW")
@@ -857,7 +815,6 @@ class ResourceFlow:
         await self._log("summary_stored", user_id, resource.id)
         return await self.handle_decision(user_id, progress)
 
-    # -- decision (S5, S7) ------------------------------------------------------- #
 
     async def handle_decision(
         self, user_id: int, progress: ProgressSink | None = None
@@ -868,7 +825,7 @@ class ResourceFlow:
         excerpt = f"{resource.url}\n\n{resource.context}"
         settings = self.deps.settings
         client = self.deps.make_decision()
-        await self._emit(progress, ANALYZING)  # L7-4: announced before the slow retries
+        await self._emit(progress, ANALYZING)
         try:
             result = await client.classify(
                 ticket_id=f"T-{resource.id}",
@@ -877,12 +834,8 @@ class ResourceFlow:
                 threshold=settings.confidence_threshold,
                 max_candidates=settings.max_candidates_shown,
             )
-        except DecisionError as exc:  # L7-5: status/message audited, never shown raw
+        except DecisionError as exc:
             safe = str(exc)
-            # unreliable-decision-retry: a hard failure means the model returned
-            # no value either — keep the flow alive on the folders + context
-            # retry step instead of the dead FAILED end. The detail stays in
-            # the resources row, the audit trail and the empty decision row.
             await record_decision(
                 self.deps.conn,
                 resource.id,
@@ -928,10 +881,7 @@ class ResourceFlow:
         )
         replies = [f"Done thinking — {len(result.candidates)} folder(s) cleared the bar."]
         if not result.candidates:
-            # unreliable-decision-retry: the model returned no usable value —
-            # show every folder and invite a text message as extra context.
             return await self._no_candidates_step(user_id, resource.id)
-        # Option B on the decision card: readable numbered caption, number buttons.
         replies.append(
             folder_picker.candidates_list_html(
                 result.candidates, sorted(settings.categories)
@@ -984,7 +934,7 @@ class ResourceFlow:
         base = resource.context or ""
         combined = f"{base}\n\n{extra}" if base else extra
         if len(combined) > _MAX_CONTEXT_CHARS:
-            combined = combined[-_MAX_CONTEXT_CHARS:]  # keep the newest context
+            combined = combined[-_MAX_CONTEXT_CHARS:]
         await set_resource_state(self.deps.conn, resource.id, "NEW", context=combined)
         _transition(resource.id, resource.state, "NEW")
         await self._log(
@@ -992,7 +942,6 @@ class ResourceFlow:
         )
         return await self.handle_decision(user_id, progress)
 
-    # -- placement ---------------------------------------------------------------- #
 
     async def handle_more_folders(self, user_id: int, page: int = 0) -> FlowResult:
         """Numbered picker: full readable paths in an HTML caption, numbers as buttons."""
@@ -1039,7 +988,7 @@ class ResourceFlow:
         except ValueError:
             await self._log("placement_rejected", user_id, resource.id, detail=f"folder={folder!r}")
             return FlowResult((UNKNOWN_FOLDER,))
-        manual_placement.clear(resource.id)  # S6: placement settled, mark no longer needed
+        manual_placement.clear(resource.id)
 
         needs_admin = await self._latest_needs_admin(resource.id)
         iv: dict[str, Any] = {}
@@ -1062,7 +1011,7 @@ class ResourceFlow:
         await self._log("placement_chosen", user_id, resource.id, detail=f"folder={folder}")
 
         replies: list[str] = []
-        if needs_admin is not None and needs_admin >= NEEDS_ADMIN_THRESHOLD:  # S7
+        if needs_admin is not None and needs_admin >= NEEDS_ADMIN_THRESHOLD:
             replies.append(NEEDS_ADMIN_NOTE)
         replies.append(PLACED.format(folder=folder))
         next_step = await self._advance(user_id, resource.id)
@@ -1077,7 +1026,6 @@ class ResourceFlow:
             row = await cursor.fetchone()
         return None if row is None else row["needs_admin"]
 
-    # -- entry interview (S14, L7-1) ---------------------------------------------- #
 
     @staticmethod
     def _derive_step(resource: Any, iv: dict[str, Any]) -> str:
@@ -1175,7 +1123,7 @@ class ResourceFlow:
                 iv.get("type", ""),
                 list(iv.get("platforms", [])),
             )
-        except ValueError as exc:  # defensive: field names only, no echo of values
+        except ValueError as exc:
             await self._log("entry_build_failed", user_id, resource.id, detail=str(exc))
             iv = {k: v for k, v in iv.items() if k == "platforms"}
             await set_resource_state(
@@ -1188,7 +1136,6 @@ class ResourceFlow:
         await self._log("entry_preview", user_id, resource.id, detail=f"folder={resource.folder}")
         return FlowResult((f"{PREVIEW}\n{line}",), keyboard=ConfirmKB(resource.folder))
 
-    # -- field edits while CONFIRMING (T4; S6.2-S6.6) ------------------------------ #
 
     def _entry_parts(
         self, resource: Any
@@ -1206,7 +1153,6 @@ class ResourceFlow:
             parsed = parse_entry_line(resource.entry_line)
         except EntryLineError:
             return None
-        # L5 rebuild mapping: tags[0] = "type:x", the rest are platform tags.
         head = parsed.tags[0] if parsed.tags else ""
         kind, sep, type_tag = head.partition(":")
         if not sep or kind != "type" or type_tag not in ENTRY_TYPES:
@@ -1251,10 +1197,10 @@ class ResourceFlow:
         stripped = (text or "").strip()
         if "\n" in stripped or "\r" in stripped:
             return None, EDIT_DESC_ONE_LINE
-        value = sanitize_line(stripped, _DESC_MAX + 1)  # +1: keep over-cap detectable
+        value = sanitize_line(stripped, _DESC_MAX + 1)
         if not value:
             return None, EDIT_DESC_EMPTY
-        if any(ch in value for ch in ("[", "]", "`")):  # L7-1 guard, same wording
+        if any(ch in value for ch in ("[", "]", "`")):
             return None, INVALID_FIELD.format(label="Description")
         if len(value) > _DESC_MAX:
             return None, EDIT_DESC_TOO_LONG
@@ -1262,7 +1208,7 @@ class ResourceFlow:
             new_line = build_entry_line(
                 parsed.name, resource.url, value, type_tag, platform_tags
             )
-        except ValueError as exc:  # defensive: validators above already applied the caps
+        except ValueError as exc:
             return None, _html_escape(sanitize_line(str(exc), EDIT_RETRY_DETAIL_MAX))
         return new_line, None
 
@@ -1279,13 +1225,13 @@ class ResourceFlow:
         if type_tag not in ENTRY_TYPES:
             return None, EDIT_TYPE_VALUE
         rest = tokens[1:]
-        if any(":" in tag for tag in rest):  # only the head may be a `type:` tag
+        if any(":" in tag for tag in rest):
             return None, EDIT_TAGS_COLON
         try:
             new_line = build_entry_line(
                 parsed.name, resource.url, parsed.description, type_tag, rest
             )
-        except ValueError as exc:  # _normalize_platform_tags messages name the tag
+        except ValueError as exc:
             return None, _html_escape(sanitize_line(str(exc), EDIT_RETRY_DETAIL_MAX))
         return new_line, None
 
@@ -1344,13 +1290,12 @@ class ResourceFlow:
             delete_outgoing=deletes,
         )
 
-    # -- confirm / commit (S13, S16) ----------------------------------------------- #
 
     async def handle_confirm(self, user_id: int) -> FlowResult:
         resource = await self._active(user_id)
         if resource is None:
             return FlowResult((NOTHING_PENDING,))
-        pending_edits.clear_marker(resource.id)  # S6.2: ✅ ends any pending edit
+        pending_edits.clear_marker(resource.id)
         if resource.state != "CONFIRMING":
             return FlowResult((CONFIRMING_HINT,))
         stored = await get_github_token(self.deps.conn, user_id)
@@ -1363,10 +1308,6 @@ class ResourceFlow:
             await self._log("pat_invalid", user_id, resource.id)
             return FlowResult((DECRYPT_FAILED,))
 
-        # L11-b: the traversal gate is the last word here. A folder that is not
-        # a configured category (tampered/stale DB row) must never reach GitHub;
-        # the resource stays CONFIRMING so /cancel works and the operator keeps
-        # the audit trail instead of an unhandled traceback in the log.
         try:
             path = self.deps.settings.readme_path(resource.folder)
         except ValueError:
@@ -1390,14 +1331,12 @@ class ResourceFlow:
             logger.warning("commit_duplicate res=%s: %s", resource.id, str(exc))
             await self._log("commit_duplicate", user_id, resource.id, detail=str(exc))
             return FlowResult((str(exc),))
-        except FetchError as exc:  # L7-5: audited verbatim, reminded publicly
+        except FetchError as exc:
             logger.warning("commit_failed res=%s: %s", resource.id, str(exc))
             await self._log("commit_failed", user_id, resource.id, detail=str(exc))
             return FlowResult((str(exc) + COMMIT_PUBLIC_REMINDER,))
         await set_resource_state(self.deps.conn, resource.id, "COMMITTED", commit_url=commit_url)
         _transition(resource.id, resource.state, "COMMITTED")
-        # S6: the mirror learns the bot's own write immediately, so the next
-        # intake is covered without waiting for the next sync tick.
         await upsert_mirror_link(
             self.deps.conn, canonical_url_key(resource.url), resource.url, resource.folder
         )
@@ -1414,9 +1353,9 @@ class ResourceFlow:
         resource = await self._active(user_id)
         if resource is None:
             return FlowResult((NOTHING_PENDING,))
-        pending_edits.clear_marker(resource.id)  # S6.2: ❌ / /cancel end the edit loop
-        rearm.disarm(user_id)  # flow-interrupt-rearm: cancel ends the armed ask too
-        manual_placement.clear(resource.id)  # unreliable-decision-retry S6: cancel frees the mark
+        pending_edits.clear_marker(resource.id)
+        rearm.disarm(user_id)
+        manual_placement.clear(resource.id)
         await set_resource_state(self.deps.conn, resource.id, "CANCELLED")
         _transition(resource.id, resource.state, "CANCELLED")
         await self._log("cancelled", user_id, resource.id, detail=f"was={resource.state}")

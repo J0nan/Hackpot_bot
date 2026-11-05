@@ -164,16 +164,13 @@ async def _to_placement(h: dict) -> ResourceFlow:
     return h["flow"]
 
 
-# ------------------------------------------------------------- S1: intake gate
-
-
 async def test_mirror_only_link_is_refused_and_nothing_is_created(h: dict) -> None:
     await upsert_mirror_link(h["conn"], canonical_url_key(GITHUB_URL), GITHUB_URL, "01_Recon/OSINT")
     await h["flow"].handle_start(USER, "jonan")
     result = await h["flow"].handle_text(USER, "jonan", GITHUB_URL)
     assert result.replies == (ALREADY_COMMITTED_OUTSIDE.format(folder="01_Recon/OSINT"),)
     assert result.keyboard is None
-    assert await _resource_count(h) == 0  # no resource row, no flow started
+    assert await _resource_count(h) == 0
     rows = await _audit(h, "duplicate_mirror")
     assert len(rows) == 1 and "01_Recon/OSINT" in rows[0]["detail"]
 
@@ -229,9 +226,6 @@ async def test_stats_unaffected_by_mirror_rows(h: dict) -> None:
     await h["flow"].handle_start(USER, "jonan")
     result = await h["flow"].handle_stats(USER, "jonan")
     assert result.replies[0] == STATS_EMPTY
-
-
-# ------------------------------------------------------------- S6: commit refresh
 
 
 async def test_successful_commit_upserts_mirror(h: dict) -> None:

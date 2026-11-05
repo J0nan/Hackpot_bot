@@ -21,15 +21,10 @@ from app.db.database import (
 )
 from app.db.models import GithubToken, MirrorLink, MirrorState, Resource, UserUploadStats
 
-# Columns of `resources` a caller may update alongside a state change.
-# `state` is the positional argument; id/tg_user_id/url/kind/created_at are
-# immutable, and updated_at is always written from utc_now().
 RESOURCE_UPDATE_COLUMNS: frozenset[str] = frozenset(
     {"context", "folder", "entry_line", "commit_url", "error"}
 )
 
-# Columns of `decisions` accepted by record_decision. `probabilities` is an
-# alias for probabilities_json; dict values for JSON columns are serialized.
 DECISION_COLUMNS: frozenset[str] = frozenset(
     {
         "request_id",
@@ -133,7 +128,7 @@ async def set_resource_state(
 
     assignments = ["state = ?", "updated_at = ?"]
     params: list[Any] = [state, utc_now()]
-    for column in sorted(updates):  # stable order, whitelisted identifiers only
+    for column in sorted(updates):
         assignments.append(f"{column} = ?")
         params.append(updates[column])
     params.append(resource_id)
@@ -254,13 +249,6 @@ async def audit(
     )
     await conn.commit()
     return cursor.lastrowid
-
-
-# ---------------------------------------------------------------- mirror ---- #
-# Data access for the repo mirror (repo-mirror-dedup S1/S2/S6/S7). The mirror
-# tables are written only by app/services/repo_mirror.py and by the post-commit
-# upsert in the flow; readers must never re-implement the canonical key — the
-# caller passes canonical_url_key(url) so intake and sync agree on identity.
 
 
 async def upsert_mirror_link(

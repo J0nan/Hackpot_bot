@@ -28,7 +28,7 @@ from app.security.token_store import decrypt_pat, encrypt_pat
 UID, UNAME, EVIL_ID = 1001, "alice", 666
 TOKEN = "ghp_ZZZVERIFYPATTOKEN1234567890abcdefXYZ"
 LEAF = "02_Web_Application/Vulnerability_Specific"
-BULLET = "- [X](https://example.com/x) — d. `type:tool` `free`"  # LEGACY shape (S4)
+BULLET = "- [X](https://example.com/x) — d. `type:tool` `free`"
 
 CATEGORIES = {"01_Recon/Tools": "recon", LEAF: "web", "03_Crypto/Wordlists": "crypto"}
 
@@ -108,7 +108,7 @@ def _no_stale_edit_markers():
     rearm.clear_all()
 
 
-async def test_unauthorized_text_is_silent_and_audited(env):  # S9/S17
+async def test_unauthorized_text_is_silent_and_audited(env):
     deps, flow = env
     m = FakeMessage(EVIL_ID, "intruder", "https://github.com/evil/repo")
     await handlers.on_text(m, deps, flow)
@@ -117,28 +117,28 @@ async def test_unauthorized_text_is_silent_and_audited(env):  # S9/S17
     assert rows and rows[0][0] == EVIL_ID and "intruder" in rows[0][2]
 
 
-async def test_unauthorized_callback_is_silent_and_audited(env):  # S9/S17
+async def test_unauthorized_callback_is_silent_and_audited(env):
     deps, flow = env
     c = FakeCallback(EVIL_ID, "intruder", "c:0")
     await handlers.on_callback(c, deps, flow)
     assert c.message.edit_text.items == [] and c.message.answer.items == []
-    assert c.answer.items == [((), {})]  # empty ack, nothing shown
+    assert c.answer.items == [((), {})]
     assert any(r[1] == "unauthorized_ignored" and r[0] == EVIL_ID for r in await _audit(deps.conn))
 
 
-async def test_unauthorized_sender_pressing_field_edit_stays_silent(env):  # S9/S17 (T4)
+async def test_unauthorized_sender_pressing_field_edit_stays_silent(env):
     """The ✏️ Description / 🏷️ Tags buttons obey the same gate as ✅/❌: silent."""
     deps, flow = env
     for data in ("d", "t"):
         c = FakeCallback(EVIL_ID, "intruder", data)
         await handlers.on_callback(c, deps, flow)
         assert c.message.edit_text.items == [] and c.message.answer.items == []
-        assert c.answer.items == [((), {})]  # empty ack, nothing shown
+        assert c.answer.items == [((), {})]
     rows = [r for r in await _audit(deps.conn) if r[1] == "unauthorized_ignored"]
     assert len(rows) == 2 and all(r[0] == EVIL_ID for r in rows)
 
 
-async def test_field_edit_callback_answers_as_new_message_and_keeps_bubble(env):  # T4 S6.2
+async def test_field_edit_callback_answers_as_new_message_and_keeps_bubble(env):
     """The edit reply must NOT edit_text the ✅/❌ bubble it lives on."""
     deps, flow = env
     await upsert_user(deps.conn, UID, UNAME)
@@ -148,18 +148,18 @@ async def test_field_edit_callback_answers_as_new_message_and_keeps_bubble(env):
     c = FakeCallback(UID, UNAME, "d")
     await handlers.on_callback(c, deps, flow)
 
-    assert c.message.edit_text.items == []  # confirmation bubble untouched
-    assert len(c.message.answer.items) == 2  # instruction, then the code block
+    assert c.message.edit_text.items == []
+    assert len(c.message.answer.items) == 2
     (text_args, _), (code_args, code_kwargs) = c.message.answer.items
     assert "description" in text_args[0].lower()
-    assert code_args[0] == "<pre>d</pre>"  # the CURRENT description, not the whole bullet
+    assert code_args[0] == "<pre>d</pre>"
     assert code_kwargs.get("parse_mode") == "HTML"
-    assert code_kwargs.get("reply_markup") is None  # keyboard never leaves the bubble
-    assert len(c.answer.items) == 1  # callback acknowledged
-    assert (await get_resource(deps.conn, r)).entry_line == BULLET  # nothing persisted
+    assert code_kwargs.get("reply_markup") is None
+    assert len(c.answer.items) == 1
+    assert (await get_resource(deps.conn, r)).entry_line == BULLET
 
 
-async def test_edited_bullet_commits_only_to_validated_folder(env):  # T4 S4.5/S16
+async def test_edited_bullet_commits_only_to_validated_folder(env):
     """Description-edit-then-confirm: the wire still shows exactly one validated
     leaf path, and the committed content is the edited bullet."""
     deps, flow = env
@@ -182,9 +182,8 @@ async def test_edited_bullet_commits_only_to_validated_folder(env):  # T4 S4.5/S
     await set_resource_state(deps.conn, r, "CONFIRMING", folder=LEAF,
                              context="c", entry_line=BULLET)
 
-    await flow.handle_callback(UID, UNAME, "d")  # ✏️ Description press
-    await flow.handle_text(UID, UNAME, "Sharpened description")  # the paste-back
-    # S4: the rebuild drops the LEGACY `free` word stored in BULLET.
+    await flow.handle_callback(UID, UNAME, "d")
+    await flow.handle_text(UID, UNAME, "Sharpened description")
     edited = "- [X](https://example.com/x) — Sharpened description. `type:tool`"
     assert (await get_resource(deps.conn, r)).entry_line == edited
 
@@ -199,7 +198,7 @@ async def test_edited_bullet_commits_only_to_validated_folder(env):  # T4 S4.5/S
     await http.aclose()
 
 
-async def test_pat_never_stored_or_echoed_in_plaintext(env):  # S8/S12
+async def test_pat_never_stored_or_echoed_in_plaintext(env):
     deps, flow = env
     await upsert_user(deps.conn, UID, UNAME)
     m = FakeMessage(UID, UNAME, TOKEN)
@@ -207,14 +206,14 @@ async def test_pat_never_stored_or_echoed_in_plaintext(env):  # S8/S12
     stored = await get_github_token(deps.conn, UID)
     assert stored and stored.enc_token != TOKEN
     assert decrypt_pat(deps.settings, stored.enc_token) == TOKEN
-    assert len(m.delete.items) == 1  # capture message deleted (S8)
+    assert len(m.delete.items) == 1
     assert TOKEN not in " ".join(t for a, _ in m.answer.items for t in a)
     for p in [Path(deps.settings.db_path)] + [Path(str(deps.settings.db_path) + s) for s in ("-wal", "-shm")]:
         if p.exists():
             assert TOKEN.encode() not in p.read_bytes()
 
 
-async def test_injection_guard_rejects_markup_in_name(env):  # L7-1
+async def test_injection_guard_rejects_markup_in_name(env):
     deps, flow = env
     await upsert_user(deps.conn, UID, UNAME)
     r = await create_resource(deps.conn, UID, "https://example.com/t", "other")
@@ -226,7 +225,7 @@ async def test_injection_guard_rejects_markup_in_name(env):  # L7-1
     assert ("entry_rejected", "field=name") in [(a, d) for _, a, d in await _audit(deps.conn)]
 
 
-async def test_folder_indices_and_raw_paths_rejected(env):  # S13/S16
+async def test_folder_indices_and_raw_paths_rejected(env):
     deps, flow = env
     await upsert_user(deps.conn, UID, UNAME)
     r = await create_resource(deps.conn, UID, "https://example.com/t", "other")
@@ -239,7 +238,7 @@ async def test_folder_indices_and_raw_paths_rejected(env):  # S13/S16
         assert "no longer available" in (await flow.handle_callback(UID, UNAME, raw)).replies[0]
 
 
-async def test_commit_wire_targets_only_readme_path(env):  # S16/S4/S8
+async def test_commit_wire_targets_only_readme_path(env):
     deps, flow = env
     seen = []
 
@@ -266,15 +265,12 @@ async def test_commit_wire_targets_only_readme_path(env):  # S16/S4/S8
     await http.aclose()
 
 
-async def test_tampered_folder_never_commits(env):  # S13/S12 (L11-b: safe reject)
+async def test_tampered_folder_never_commits(env):
     deps, flow = env
     await upsert_user(deps.conn, UID, UNAME)
     await save_github_token(deps.conn, UID, encrypt_pat(deps.settings, TOKEN))
     r = await create_resource(deps.conn, UID, "https://example.com/t", "other")
     await set_resource_state(deps.conn, r, "CONFIRMING", folder="../../etc", entry_line=BULLET)
-    # T7/L11-b: handle_confirm now catches the traversal gate's ValueError instead
-    # of raising. The gate itself is unchanged — deps.make_github still explodes if
-    # any client is built, so reaching GitHub would fail this test loudly.
     result = await flow.handle_confirm(UID)
     assert "nothing was committed" in "\n".join(result.replies).lower()
     assert "../../etc" not in "\n".join(result.replies)
@@ -282,18 +278,18 @@ async def test_tampered_folder_never_commits(env):  # S13/S12 (L11-b: safe rejec
     assert "commit_rejected" in [action for _, action, _ in await _audit(deps.conn)]
 
 
-async def test_resume_mid_interview_on_fresh_flow(env):  # S10
+async def test_resume_mid_interview_on_fresh_flow(env):
     deps, flow = env
     await upsert_user(deps.conn, UID, UNAME)
     r = await create_resource(deps.conn, UID, "https://example.com/t", "other")
     await set_resource_state(deps.conn, r, "AWAITING_ENTRY_INFO", folder=LEAF, context="c",
                              entry_line=json.dumps({"name": "n", "description": "d"}, sort_keys=True))
-    fresh = ResourceFlow(deps)  # simulate a restarted process
+    fresh = ResourceFlow(deps)
     assert (await fresh.handle_text(UID, UNAME, "tool")).replies == (ASK_PLATFORMS,)
     assert json.loads((await get_resource(deps.conn, r)).entry_line)["type"] == "tool"
 
 
-async def test_active_resource_excludes_final_states(env):  # S10
+async def test_active_resource_excludes_final_states(env):
     deps, flow = env
     await upsert_user(deps.conn, UID, UNAME)
     for state in ("COMMITTED", "FAILED", "CANCELLED"):

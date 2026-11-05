@@ -35,13 +35,10 @@ def make_settings(**overrides: Any) -> Settings:
     return Settings(_env_file=None, **values)  # type: ignore[arg-type]
 
 
-# ----------------------------------------------------------------- settings
-
-
 def test_mirror_settings_defaults_keep_constructions_green() -> None:
     s = make_settings()
     assert s.mirror_sync_enabled is True
-    assert s.mirror_sync_interval_hours == 1.0  # S3: hourly by default
+    assert s.mirror_sync_interval_hours == 1.0
 
 
 def test_mirror_sync_can_be_disabled() -> None:
@@ -57,9 +54,6 @@ def test_mirror_interval_bounds_rejected(hours: float) -> None:
 @pytest.mark.parametrize("hours", [0.25, 1.0, 24.0])
 def test_mirror_interval_bounds_accepted(hours: float) -> None:
     assert make_settings(mirror_sync_interval_hours=hours).mirror_sync_interval_hours == hours
-
-
-# ------------------------------------------------------------------- wiring
 
 
 class _DummyBot:
@@ -78,7 +72,7 @@ class _DummyDispatcher:
 
     async def start_polling(self, bot: Any, allowed_updates: Any = None) -> None:
         self.polled = True
-        await asyncio.sleep(0)  # let the mirror task start its body
+        await asyncio.sleep(0)
 
 
 @pytest.fixture()
@@ -99,7 +93,7 @@ def wired(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
 
     async def fake_loop(settings: Any, conn: Any) -> None:
         mirror_calls.append((settings, conn))
-        await asyncio.sleep(3600)  # cancelled by main's shutdown path
+        await asyncio.sleep(3600)
 
     monkeypatch.setattr(m, "mirror_sync_loop", fake_loop)
 
@@ -129,7 +123,7 @@ async def test_main_launches_mirror_task_and_cancels_on_shutdown(wired: dict) ->
     settings, conn = wired["mirror_calls"][0]
     assert settings.mirror_sync_enabled is True
     assert settings.mirror_sync_interval_hours == 1.0
-    assert conn is not None  # launched on the shared DB connection
+    assert conn is not None
     assert wired["dispatched"][0].polled is True
 
 

@@ -14,8 +14,6 @@ from cryptography.fernet import Fernet
 
 from app.config import Settings
 
-# Accepted token shapes. Classic GitHub tokens use these five prefixes;
-# fine-grained tokens use a longer prefix and may contain underscores.
 CLASSIC_PREFIXES: tuple[str, ...] = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_")
 FINE_GRAINED_PREFIX = "github_pat_"
 _TOKEN_BODY_MIN = 16
@@ -27,15 +25,13 @@ _CLASSIC_RE = re.compile(
 )
 _FINE_GRAINED_RE = re.compile(r"github_pat_[A-Za-z0-9_]{16,255}")
 
-# Generic, echo-free messages: nothing that reaches a log may contain the secret.
 INVALID_TOKEN_MESSAGE = "GitHub token is not valid"
 DECRYPT_FAILED_MESSAGE = "Stored GitHub token could not be decrypted"
 
-# Masking: keep the public format prefix and the last four characters only.
 MASK_SEPARATOR = "…"
 MASK_FALLBACK = "***"
 _MIN_MASKABLE_LENGTH = 12
-_MAX_MASK_PREFIX = len(FINE_GRAINED_PREFIX)  # longest prefix we are willing to echo
+_MAX_MASK_PREFIX = len(FINE_GRAINED_PREFIX)
 _MIN_HIDDEN_CHARS = 8
 
 
@@ -78,7 +74,6 @@ def looks_like_token(text: str) -> bool:
         return False
     if any(character in text for character in ("\r", "\n", "\v", "\f", "\x85", "\u2028", "\u2029")):
         return False
-    # Surrounding spaces from a manual paste are tolerated; inner whitespace is not.
     return validate_pat_format(text.strip())
 
 

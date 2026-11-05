@@ -43,9 +43,6 @@ CATEGORIES: dict[str, str] = {
 CONTENT = "https://github.com/example/tool\n\nA tool that does web things."
 
 
-# --------------------------------------------------------------------------- #
-# helpers
-# --------------------------------------------------------------------------- #
 class Recorder:
     """MockTransport handler that replays scripted outcomes and records traffic.
 
@@ -61,7 +58,6 @@ class Recorder:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         assert self.outcomes, "test scripted no responses"
         self.requests.append(request)
-        # The last scripted outcome repeats if more attempts happen than outcomes.
         outcome = self.outcomes[min(len(self.requests) - 1, len(self.outcomes) - 1)]
         if isinstance(outcome, Exception):
             raise outcome
@@ -141,8 +137,6 @@ async def make_client():
     ) -> DecisionClient:
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         pool.append(client)
-        # A Recorder doubles as the injected sleep sink; anything else keeps the
-        # production default (asyncio.sleep).
         sleep = handler.sleep if isinstance(handler, Recorder) else None
         return DecisionClient(
             api_url=api_url,
@@ -158,9 +152,6 @@ async def make_client():
         await client.aclose()
 
 
-# --------------------------------------------------------------------------- #
-# build_request — S5 / S7
-# --------------------------------------------------------------------------- #
 def test_build_request_question_shape() -> None:
     request = build_request(MODEL, TICKET, CONTENT, CATEGORIES)
 
@@ -168,12 +159,11 @@ def test_build_request_question_shape() -> None:
     assert request["state"] == {"ticket_id": TICKET, "content": CONTENT}
 
     questions = request["questions"]
-    assert set(questions) == {"folder", "needs_admin"}  # no cost question (S3)
+    assert set(questions) == {"folder", "needs_admin"}
 
     folder = questions["folder"]
     assert folder["type"] == "choice"
     assert folder["instructions"] == FOLDER_INSTRUCTIONS
-    # criteria map keys must be exactly the configured leaf categories (S18).
     assert list(folder["criteria"].keys()) == list(CATEGORIES.keys())
     assert folder["criteria"] == CATEGORIES
 
@@ -210,7 +200,6 @@ def test_build_request_caps_content_at_paragraph_boundary() -> None:
 
     assert len(trimmed) <= 20_000
     used = trimmed.split("\n\n")
-    # the last retained paragraph is complete, and the next one would not fit
     assert used[-1] == paragraphs[len(used) - 1]
     assert len("\n\n".join(paragraphs[: len(used) + 1])) > 20_000
 
@@ -234,9 +223,6 @@ def test_build_request_rejects_categories_over_model_option_limit() -> None:
         build_request(MODEL, TICKET, CONTENT, too_many)
 
 
-# --------------------------------------------------------------------------- #
-# DecisionClient construction
-# --------------------------------------------------------------------------- #
 def test_client_accepts_plain_string_key(make_client) -> None:
     recorder = Recorder()
     client = make_client(scripted_handler([ok(verified_response())], recorder), api_key=FAKE_KEY)
@@ -252,9 +238,6 @@ def test_client_rejects_blank_credentials(make_client) -> None:
         make_client(handler, api_url="")
 
 
-# --------------------------------------------------------------------------- #
-# classify — outgoing request contract (S5, S6)
-# --------------------------------------------------------------------------- #
 async def test_classify_posts_verified_contract(make_client) -> None:
     recorder = Recorder()
     client = make_client(scripted_handler([ok(verified_response(PROBABILITIES))], recorder))
@@ -265,7 +248,6 @@ async def test_classify_posts_verified_contract(make_client) -> None:
     request = recorder.requests[0]
     assert str(request.url) == API_URL
     assert request.method == "POST"
-    # Bearer scheme confirmed by the live test (L4)
     assert request.headers["authorization"] == f"Bearer {FAKE_KEY}"
     assert request.headers["content-type"] == "application/json"
     assert json.loads(request.content) == build_request(MODEL, TICKET, CONTENT, CATEGORIES)
@@ -282,7 +264,6 @@ async def test_classify_authorizes_with_secretstr_key_from_settings(make_client)
     await client.classify(TICKET, CONTENT, CATEGORIES, 0.15, 3)
 
     assert recorder.requests[0].headers["authorization"] == f"Bearer {FAKE_KEY}"
-    # credential travels only in the header, never in the request body
     assert FAKE_KEY not in recorder.requests[0].content.decode()
 
 
@@ -317,9 +298,6 @@ async def test_classify_validates_before_any_http_call(make_client) -> None:
     assert recorder.calls == 0
 
 
-# --------------------------------------------------------------------------- #
-# classify — parsing candidates (S7)
-# --------------------------------------------------------------------------- #
 async def test_classify_orders_and_thresholds_candidates(make_client) -> None:
     recorder = Recorder()
     client = make_client(scripted_handler([ok(verified_response(PROBABILITIES))], recorder))
@@ -327,7 +305,6 @@ async def test_classify_orders_and_thresholds_candidates(make_client) -> None:
     result = await client.classify(TICKET, CONTENT, CATEGORIES, 0.15, 3)
 
     assert isinstance(result, ClassificationResult)
-    # 0.02 / 0.05 / 0.0 entries fall below the configured threshold
     assert [c.folder for c in result.candidates] == [
         "02_Web_Application/Vulnerability_Specific",
         "04_RE/Reverse_Engineering",
@@ -412,13 +389,13 @@ async def test_classify_garbled_optional_answers_are_tolerated(make_client) -> N
     recorder = Recorder()
     payload = verified_response(PROBABILITIES)
     payload["answers"]["needs_admin"] = {"type": "noul", "noul": "not-a-number"}
-    payload["answers"]["cost"] = {"type": "choice", "choice": "free"}  # legacy answer: ignored
+    payload["answers"]["cost"] = {"type": "choice", "choice": "free"}
     client = make_client(scripted_handler([ok(payload)], recorder))
 
     result = await client.classify(TICKET, CONTENT, CATEGORIES, 0.15, 3)
 
     assert result.needs_admin is None
-    assert not hasattr(result, "cost")  # S3: cost is gone from the result
+    assert not hasattr(result, "cost")
 
 
 @pytest.mark.parametrize(
@@ -473,9 +450,6 @@ def test_result_dataclasses_are_frozen() -> None:
         result.needs_admin = 0.5  # type: ignore[misc]
 
 
-# --------------------------------------------------------------------------- #
-# retries and error safety
-# --------------------------------------------------------------------------- #
 async def test_retries_500_then_succeeds(make_client) -> None:
     recorder = Recorder()
     client = make_client(
@@ -493,7 +467,7 @@ async def test_retries_500_then_succeeds(make_client) -> None:
 
     assert recorder.calls == 3
     assert len(recorder.sleeps) == 2
-    assert recorder.sleeps == sorted(recorder.sleeps)  # increasing backoff
+    assert recorder.sleeps == sorted(recorder.sleeps)
     assert [c.folder for c in result.candidates] == [
         "02_Web_Application/Vulnerability_Specific",
         "04_RE/Reverse_Engineering",

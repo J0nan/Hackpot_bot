@@ -74,8 +74,8 @@ CATEGORIES = {
     "01_Recon/OSINT": "recon and OSINT resources",
     "03_Mobile/Android": "android security resources",
 }
-FOLDERS = sorted(CATEGORIES)  # ["01_Recon/OSINT", "02_...", "03_Mobile/Android"]
-CHOSEN = FOLDERS[1]  # 02_Web_Application/Vulnerability_Specific
+FOLDERS = sorted(CATEGORIES)
+CHOSEN = FOLDERS[1]
 
 
 def make_settings(**overrides: Any) -> Settings:
@@ -235,13 +235,9 @@ async def _to_placement(h: dict) -> ResourceFlow:
 async def _to_confirming(h: dict) -> tuple[ResourceFlow, Any]:
     flow = await _to_placement(h)
     await flow.handle_folder_choice(USER, CHOSEN)
-    # github kind pre-fills name/description from repo meta (no cost step: S2)
-    await flow.handle_callback(USER, "jonan", "tool")  # type step
-    result = await flow.handle_text(USER, "jonan", "linux")  # platforms -> preview
+    await flow.handle_callback(USER, "jonan", "tool")
+    result = await flow.handle_text(USER, "jonan", "linux")
     return flow, result
-
-
-# ----------------------------------------------------------------- S9 gate
 
 
 async def test_unauthorized_is_silent_and_audited(h: dict) -> None:
@@ -272,10 +268,7 @@ def test_precheck_rate_limits_after_window_budget(h: dict) -> None:
     assert precheck(deps, USER) == "ok"
     assert precheck(deps, USER) == "rate_limited"
     assert precheck(deps, USER) == "rate_limited"
-    assert SLOW_DOWN  # handlers reply exactly once with this wording
-
-
-# ---------------------------------------------------------------- PAT store
+    assert SLOW_DOWN
 
 
 async def test_pat_capture_encrypts_stores_and_deletes(h: dict) -> None:
@@ -283,12 +276,12 @@ async def test_pat_capture_encrypts_stores_and_deletes(h: dict) -> None:
     await flow.handle_start(USER, "jonan")
     result = await flow.handle_text(USER, "jonan", VALID_PAT)
     assert result.delete_message is True
-    assert result.replies  # confirmation reply exists
+    assert result.replies
     assert all(VALID_PAT not in r for r in result.replies)
 
     stored = await get_github_token(h["conn"], USER)
     assert stored is not None
-    assert stored.enc_token != VALID_PAT  # ciphertext at rest
+    assert stored.enc_token != VALID_PAT
     assert decrypt_pat(h["settings"], stored.enc_token) == VALID_PAT
     assert await _audit(h, "pat_captured")
 
@@ -298,14 +291,14 @@ async def test_start_asks_pat_when_missing_offers_link_when_present(h: dict) -> 
     result = await flow.handle_start(USER, "jonan")
     text = "\n".join(result.replies)
     assert "token" in text.lower()
-    assert "personal-access-tokens" in text.lower()  # start prompt offers the PAT creation link
-    assert "public" in text.lower()  # S15: the public-links reminder is pinned, not replaced
+    assert "personal-access-tokens" in text.lower()
+    assert "public" in text.lower()
 
     await _capture_token(h)
     result = await flow.handle_start(USER, "jonan")
     assert "link" in "\n".join(result.replies).lower()
     assert "github personal access" not in "\n".join(result.replies).lower()
-    assert "public" in "\n".join(result.replies).lower()  # S15 pinned in the returning-admin greeting too
+    assert "public" in "\n".join(result.replies).lower()
 
 
 async def test_forget_deletes_stored_pat(h: dict) -> None:
@@ -324,20 +317,16 @@ async def test_link_before_token_parks_resource_then_resumes_after_capture(h: di
     active = await get_active_resource_for_user(h["conn"], USER)
     assert active is not None and active.state == "NEED_TOKEN" and active.kind == "github"
 
-    result = await _answer(flow, "I do not have one yet")  # NEED_TOKEN is a text step
+    result = await _answer(flow, "I do not have one yet")
     assert "token" in "\n".join(result.replies).lower()
     active = await get_active_resource_for_user(h["conn"], USER)
     assert active.state == "NEED_TOKEN"
 
-    # the step still wants text, so the PAT lands with no Continue press (S4).
     result = await flow.handle_text(USER, "jonan", VALID_PAT)
     assert result.delete_message is True
-    assert h["github_tokens"][0] == VALID_PAT  # fetch used the sender's own PAT
+    assert h["github_tokens"][0] == VALID_PAT
     active = await get_active_resource_for_user(h["conn"], USER)
     assert active.state == "AWAITING_PLACEMENT"
-
-
-# ---------------------------------------------------------------- link intake
 
 
 async def test_zero_or_multiple_urls_gives_usage_hint(h: dict) -> None:
@@ -349,7 +338,7 @@ async def test_zero_or_multiple_urls_gives_usage_hint(h: dict) -> None:
         USER, "jonan", f"see {GITHUB_URL} and https://example.com/other too"
     )
     assert "\n".join(result.replies).lower().count("one") >= 1
-    assert await get_active_resource_for_user(h["conn"], USER) is None  # nothing created
+    assert await get_active_resource_for_user(h["conn"], USER) is None
 
 
 async def test_github_url_fetches_readme_then_classifies_into_candidates(h: dict) -> None:
@@ -371,7 +360,6 @@ async def test_github_url_fetches_readme_then_classifies_into_candidates(h: dict
     assert resource.state == "AWAITING_PLACEMENT"
     assert isinstance(result.keyboard, CandidatesKB)
     assert [c.folder for c in result.keyboard.candidates] == [CHOSEN, FOLDERS[0]]
-    # Keycap'd caption (Option B) carries the readable names and percents.
     assert result.parse_mode == "HTML"
     caption = result.replies[-1]
     assert "1\uFE0F\u20E3 Vulnerability Specific" in caption
@@ -383,7 +371,7 @@ async def test_github_url_fetches_readme_then_classifies_into_candidates(h: dict
         row = dict(await cur.fetchone())
     assert json.loads(row["probabilities_json"]) == {CHOSEN: 0.75, FOLDERS[0]: 0.2}
     assert row["needs_admin"] == 0.75
-    assert row["cost_choice"] == ""  # S3: cost is never written to new decisions
+    assert row["cost_choice"] == ""
     assert row["request_id"] == "req-1"
     assert row["folder_choice"] == CHOSEN
     assert json.loads(row["raw_json"]) == {"answers": {"folder": {"choice": CHOSEN}}}
@@ -396,7 +384,7 @@ async def test_readme_excerpt_is_capped_near_6000_chars(h: dict) -> None:
     await _capture_token(h)
     await flow.handle_text(USER, "jonan", GITHUB_URL)
     content = h["decision"].calls[-1]["content"]
-    assert content.count("x") <= 6000  # L7-2
+    assert content.count("x") <= 6000
     assert "lead para" in content
 
 
@@ -410,7 +398,7 @@ async def test_github_fetch_failure_asks_summary_with_public_reminder(h: dict) -
     text = "\n".join(result.replies).lower()
     assert "summary" in text and "public" in text
     rows = await _audit(h, "fetch_failed")
-    assert "404" in rows[-1]["detail"]  # L7-5: status lands in audit, not chat
+    assert "404" in rows[-1]["detail"]
 
 
 async def test_summary_path_records_context_then_classifies(h: dict) -> None:
@@ -420,7 +408,7 @@ async def test_summary_path_records_context_then_classifies(h: dict) -> None:
     assert result.replies
     assert (await get_active_resource_for_user(h["conn"], USER)).state == "NEED_SUMMARY"
 
-    await _answer(flow, "An offline wordlist generator for fuzzing.")  # direct (S4)
+    await _answer(flow, "An offline wordlist generator for fuzzing.")
     call = h["decision"].calls[-1]
     assert "https://cool-labs.io/tool" in call["content"]
     assert "wordlist generator" in call["content"]
@@ -437,32 +425,28 @@ async def test_decision_hard_failure_offers_folders_and_context_retry(h: dict) -
     await _capture_token(h)
     result = await flow.handle_text(USER, "jonan", GITHUB_URL)
     text = "\n".join(result.replies)
-    assert "503" not in text and "HTTP" not in text  # no internal detail to user
-    assert "reliable" in text.lower()  # the model's failure is stated plainly
-    assert isinstance(result.keyboard, ManualKB)  # manual-or-cancel, folders stay hidden
+    assert "503" not in text and "HTTP" not in text
+    assert "reliable" in text.lower()
+    assert isinstance(result.keyboard, ManualKB)
 
     resource = await get_active_resource_for_user(h["conn"], USER)
-    assert resource is not None and resource.state == "AWAITING_PLACEMENT"  # flow survives
-    assert "503" in resource.error  # the detail stays in the DB row
+    assert resource is not None and resource.state == "AWAITING_PLACEMENT"
+    assert "503" in resource.error
     rows = await _audit(h, "decision_failed")
     assert "503" in rows[-1]["detail"]
     async with h["conn"].execute(
         "SELECT folder_choice, raw_json FROM decisions WHERE resource_id = ?", (resource.id,)
     ) as cur:
         row = dict(await cur.fetchone())
-    assert row["folder_choice"] == ""  # the empty row drives the retry gating
+    assert row["folder_choice"] == ""
     assert "503" in row["raw_json"]
 
-    # sending context re-runs the classification; a healthy answer resumes the card
     h["decision"].error = None
     result = await flow.handle_text(USER, "jonan", "A tool that dumps Windows credentials")
     assert isinstance(result.keyboard, CandidatesKB)
     content = h["decision"].calls[-1]["content"]
     assert "A tool that dumps Windows credentials" in content
-    assert "Readme magic body" in content  # original context kept
-
-
-# ------------------------------------------------- unreliable decision retry
+    assert "Readme magic body" in content
 
 
 def _empty_decision() -> ClassificationResult:
@@ -480,18 +464,18 @@ async def test_decision_without_value_offers_manual_or_cancel_and_asks_context(h
 
     resource = await get_active_resource_for_user(h["conn"], USER)
     assert resource.state == "AWAITING_PLACEMENT"
-    assert isinstance(result.keyboard, ManualKB)  # ONLY manual-classify / cancel
+    assert isinstance(result.keyboard, ManualKB)
     lowered = "\n".join(result.replies).lower()
-    assert "reliable" in lowered  # the model told them so plainly
-    assert "context" in lowered  # the text-retry invite is visible
-    assert "manual" in lowered  # and the manual route is named
-    assert "OSINT" not in lowered and "Android" not in lowered  # no folders yet
+    assert "reliable" in lowered
+    assert "context" in lowered
+    assert "manual" in lowered
+    assert "OSINT" not in lowered and "Android" not in lowered
 
     async with h["conn"].execute(
         "SELECT folder_choice, confidence FROM decisions WHERE resource_id = ?", (resource.id,)
     ) as cur:
         row = dict(await cur.fetchone())
-    assert row["folder_choice"] == "" and row["confidence"] == 0.0  # audit keeps the empty answer
+    assert row["folder_choice"] == "" and row["confidence"] == 0.0
 
 
 async def test_added_context_text_reclassifies_and_resumes_candidates(h: dict) -> None:
@@ -500,18 +484,17 @@ async def test_added_context_text_reclassifies_and_resumes_candidates(h: dict) -
     await _capture_token(h)
     await flow.handle_text(USER, "jonan", GITHUB_URL)
 
-    # The ask is armed: the next text is extra context — no keep press needed.
     h["decision"].result = FakeDecision().result
     result = await flow.handle_text(USER, "jonan", "It fuzzes GraphQL APIs for auth bypass")
-    assert isinstance(result.keyboard, CandidatesKB)  # back to the normal decision card
+    assert isinstance(result.keyboard, CandidatesKB)
 
     content = h["decision"].calls[-1]["content"]
     assert content.startswith(GITHUB_URL)
-    assert "Readme magic body" in content  # the original context is kept
-    assert "It fuzzes GraphQL APIs for auth bypass" in content  # the added text is used
+    assert "Readme magic body" in content
+    assert "It fuzzes GraphQL APIs for auth bypass" in content
     resource = await get_active_resource_for_user(h["conn"], USER)
     assert resource.state == "AWAITING_PLACEMENT"
-    assert "It fuzzes GraphQL" in resource.context  # and persisted for later steps
+    assert "It fuzzes GraphQL" in resource.context
     rows = await _audit(h, "context_retry")
     assert rows and rows[-1]["resource_id"] == resource.id
 
@@ -523,10 +506,10 @@ async def test_context_retry_still_unreliable_re_offers_folders_armed(h: dict) -
     await flow.handle_text(USER, "jonan", GITHUB_URL)
 
     result = await flow.handle_text(USER, "jonan", "first extra note")
-    assert isinstance(result.keyboard, ManualKB)  # still nothing reliable: offer again
-    result = await flow.handle_text(USER, "jonan", "   ")  # empty context re-asks, no call spent
     assert isinstance(result.keyboard, ManualKB)
-    assert len(h["decision"].calls) == 2  # whitespace did not hit the model again
+    result = await flow.handle_text(USER, "jonan", "   ")
+    assert isinstance(result.keyboard, ManualKB)
+    assert len(h["decision"].calls) == 2
 
     result = await flow.handle_text(USER, "jonan", "second extra note")
     assert isinstance(result.keyboard, ManualKB)
@@ -540,7 +523,7 @@ async def test_continue_re_offers_unreliable_step_and_arms_retry(h: dict) -> Non
     flow = h["flow"]
     await _capture_token(h)
     await flow.handle_text(USER, "jonan", GITHUB_URL)
-    await flow.handle_callback(USER, "jonan", "o")  # browsing the picker drops the arm
+    await flow.handle_callback(USER, "jonan", "o")
 
     result = await flow.handle_text(USER, "jonan", "context after guard")
     assert result.replies == (FLOW_INTERRUPTED,)
@@ -548,9 +531,9 @@ async def test_continue_re_offers_unreliable_step_and_arms_retry(h: dict) -> Non
 
     resumed = await flow.handle_callback(USER, "jonan", "keep")
     assert isinstance(resumed.keyboard, ManualKB)
-    assert "reliable" in "\n".join(resumed.replies).lower()  # the step as first shown, invite and all
+    assert "reliable" in "\n".join(resumed.replies).lower()
 
-    await flow.handle_text(USER, "jonan", "context after guard")  # now consumed as retry
+    await flow.handle_text(USER, "jonan", "context after guard")
     assert "context after guard" in h["decision"].calls[-1]["content"]
 
 
@@ -559,33 +542,30 @@ async def test_manual_classify_ends_the_context_invite(h: dict) -> None:
     flow = h["flow"]
     await _capture_token(h)
     result = await flow.handle_text(USER, "jonan", GITHUB_URL)
-    assert isinstance(result.keyboard, ManualKB)  # the initial ask: manual or cancel only
+    assert isinstance(result.keyboard, ManualKB)
 
     result = await flow.handle_callback(USER, "jonan", "m")
-    assert isinstance(result.keyboard, FoldersKB)  # the full picker opens only now
+    assert isinstance(result.keyboard, FoldersKB)
     assert "manual" in "\n".join(result.replies).lower()
     assert "Choose destination folder" in result.replies[-1]
-    assert "OSINT" in result.replies[-1]  # all configured leaves are on the card
+    assert "OSINT" in result.replies[-1]
 
     calls = len(h["decision"].calls)
-    result = await flow.handle_text(USER, "jonan", "a few words")  # NOT context any more
+    result = await flow.handle_text(USER, "jonan", "a few words")
     assert result.replies == (FLOW_INTERRUPTED,)
     assert isinstance(result.keyboard, ResumeKB)
-    assert len(h["decision"].calls) == calls  # the model was not consulted
+    assert len(h["decision"].calls) == calls
 
-    resumed = await flow.handle_callback(USER, "jonan", "keep")  # step stays button-driven
-    assert isinstance(resumed.keyboard, FoldersKB)  # the plain picker, no context invite
+    resumed = await flow.handle_callback(USER, "jonan", "keep")
+    assert isinstance(resumed.keyboard, FoldersKB)
     again = await flow.handle_text(USER, "jonan", "still not context")
     assert again.replies == (FLOW_INTERRUPTED,)
 
     placed = await flow.handle_callback(USER, "jonan", f"f:{FOLDERS.index(CHOSEN)}")
-    assert placed.replies  # normal placement continues into the interview
+    assert placed.replies
     resource = await get_active_resource_for_user(h["conn"], USER)
     assert resource.state == "AWAITING_ENTRY_INFO" and resource.folder == CHOSEN
     assert await _audit(h, "manual_placement")
-
-
-# ---------------------------------------------------------------- placement
 
 
 async def test_folder_choice_by_callback_index_round_trip(h: dict) -> None:
@@ -595,7 +575,7 @@ async def test_folder_choice_by_callback_index_round_trip(h: dict) -> None:
     resource = await get_active_resource_for_user(h["conn"], USER)
     assert resource.state == "AWAITING_ENTRY_INFO"
     assert resource.folder == CHOSEN
-    assert "double-check" in "\n".join(result.replies).lower()  # S7 needs_admin >= 0.5
+    assert "double-check" in "\n".join(result.replies).lower()
     assert await _audit(h, "placement_chosen")
 
 
@@ -615,7 +595,7 @@ async def test_folder_choice_rejects_invalid_callback_index(h: dict) -> None:
     flow = await _to_placement(h)
     result = await flow.handle_callback(USER, "jonan", "c:99")
     resource = await get_active_resource_for_user(h["conn"], USER)
-    assert resource.state == "AWAITING_PLACEMENT"  # unchanged
+    assert resource.state == "AWAITING_PLACEMENT"
     assert result.replies
 
     result = await flow.handle_callback(USER, "jonan", "c:notanint")
@@ -629,8 +609,6 @@ async def test_other_folders_pages(h: dict) -> None:
     flow = await _to_placement(h)
     result = await flow.handle_callback(USER, "jonan", "o")
     assert isinstance(result.keyboard, FoldersKB) and result.keyboard.page == 0
-    # Option B: the full paths ride in an HTML caption, keycap'd numbers that
-    # match the caption lines one-to-one on the keyboard.
     assert result.parse_mode == "HTML"
     text = result.replies[0]
     assert "Page 1 of 1" in text
@@ -639,53 +617,49 @@ async def test_other_folders_pages(h: dict) -> None:
         assert folder.split("/")[1].replace("_", " ") in text
     result = await flow.handle_callback(USER, "jonan", "p:1")
     assert isinstance(result.keyboard, FoldersKB) and result.keyboard.page == 1
-    assert "Page 1 of 1" in result.replies[0]  # 3 folders fit one page: clamped
+    assert "Page 1 of 1" in result.replies[0]
     result = await flow.handle_callback(USER, "jonan", f"f:{FOLDERS.index(FOLDERS[2])}")
     resource = await get_active_resource_for_user(h["conn"], USER)
     assert resource.folder == FOLDERS[2]
-
-
-# ---------------------------------------------------------------- interview
 
 
 async def _to_interview(h: dict) -> ResourceFlow:
     """Mid-interview 'other' resource with NO pre-fills (exercises derivation)."""
     conn = h["conn"]
     await upsert_user(conn, USER, "jonan")
-    await _capture_token(h)  # keep confirm path realistic; not asserted here
+    await _capture_token(h)
     rid = await create_resource(conn, USER, "https://cool-labs.io/tool", "other")
     await set_resource_state(
         conn, rid, "AWAITING_ENTRY_INFO", folder=CHOSEN, context="A summary exists", entry_line="{}"
     )
-    return ResourceFlow(h["deps"])  # fresh instance == resume
+    return ResourceFlow(h["deps"])
 
 
 async def test_interview_step_derivation_and_bracket_rejection(h: dict) -> None:
     flow = await _to_interview(h)
 
-    # First empty field is name: a bracketed name must be refused, storing nothing.
-    result = await _answer(flow, "Bad]Name")  # name is a text step (S4)
+    result = await _answer(flow, "Bad]Name")
     assert "[" in result.replies[0] or "]" in result.replies[0] or "bracket" in result.replies[0].lower()
     resource = await get_resource(h["conn"], await _active_id(h))
-    assert json.loads(resource.entry_line) == {}  # rejected input stored nothing
+    assert json.loads(resource.entry_line) == {}
     assert await _audit(h, "entry_rejected")
 
-    result = await flow.handle_text(USER, "jonan", "SQLMap")  # the step keeps taking text
+    result = await flow.handle_text(USER, "jonan", "SQLMap")
     assert "description" in "\n".join(result.replies).lower()
 
-    result = await _answer(flow, "evil `backtick` thing")  # description step, direct
+    result = await _answer(flow, "evil `backtick` thing")
     assert "backtick" in "\n".join(result.replies).lower() or "`" in result.replies[0]
 
-    await flow.handle_text(USER, "jonan", "Dumps database banners")  # still a text step
-    result = await _answer(flow, "banana")  # invalid type at the type step
+    await flow.handle_text(USER, "jonan", "Dumps database banners")
+    result = await _answer(flow, "banana")
     assert isinstance(result.keyboard, TypeKB)
 
     await flow.handle_callback(USER, "jonan", "tool")
-    result = await flow.handle_callback(USER, "jonan", "freemium")  # cost button gone (S2)
-    assert result.replies == (UNKNOWN_CALLBACK,)  # ignored, audited, not an error state
+    result = await flow.handle_callback(USER, "jonan", "freemium")
+    assert result.replies == (UNKNOWN_CALLBACK,)
     assert await _audit(h, "callback_ignored")
 
-    result = await _answer(flow, "linux")  # platforms is a text step too (S4)
+    result = await _answer(flow, "linux")
     assert isinstance(result.keyboard, ConfirmKB)
     resource = await get_resource(h["conn"], await _active_id(h))
     assert resource.state == "CONFIRMING"
@@ -706,7 +680,7 @@ async def test_interview_control_chars_are_sanitized(h: dict) -> None:
     await _answer(flow, "Nor\x00mal Name")
     resource = await get_resource(h["conn"], await _active_id(h))
     iv = json.loads(resource.entry_line)
-    assert iv["name"] == "Normal Name"  # control chars dropped by sanitize_line
+    assert iv["name"] == "Normal Name"
 
 
 async def test_platforms_none_accepts_empty_optional(h: dict) -> None:
@@ -729,15 +703,15 @@ async def test_platforms_reject_backtick_tokens(h: dict) -> None:
     await flow.handle_callback(USER, "jonan", "free")
     result = await _answer(flow, "linux `evil`")
     resource = await get_resource(h["conn"], await _active_id(h))
-    assert resource.state == "AWAITING_ENTRY_INFO"  # refused, still asking platforms
-    assert result.replies == (ASK_PLATFORMS,)  # rejection just re-asks the step (S4)
+    assert resource.state == "AWAITING_ENTRY_INFO"
+    assert result.replies == (ASK_PLATFORMS,)
 
 
 async def test_resume_finds_mid_interview_resource(h: dict) -> None:
     flow1 = await _to_interview(h)
-    await _answer(flow1, "SQLMap")  # answers name step
+    await _answer(flow1, "SQLMap")
 
-    flow2 = ResourceFlow(h["deps"])  # brand-new instance, same db == restart
+    flow2 = ResourceFlow(h["deps"])
     result = await _answer(flow2, "Dumps database banners")
     assert "type" in "\n".join(result.replies).lower() or isinstance(result.keyboard, TypeKB)
 
@@ -750,23 +724,20 @@ async def test_cancel_clears_active_resource(h: dict) -> None:
     assert await _audit(h, "cancelled")
 
 
-# ---------------------------------------------------------------- confirm
-
-
 async def test_confirm_commits_with_sender_pat_and_stores_commit_url(h: dict) -> None:
     flow, preview = await _to_confirming(h)
     assert isinstance(preview.keyboard, ConfirmKB)
     assert preview.keyboard.folder == CHOSEN
-    assert "linux" in "\n".join(preview.replies)  # preview shows the bullet
-    rid = await _active_id(h)  # COMMITTED is a final state; remember the id
+    assert "linux" in "\n".join(preview.replies)
+    rid = await _active_id(h)
 
     result = await flow.handle_confirm(USER)
     commit_call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]
-    assert h["github_tokens"][-1] == VALID_PAT  # decrypted sender PAT used
-    assert commit_call[1] == f"{CHOSEN}/README.md"  # settings.readme_path(folder)
-    assert commit_call[3] == "main"  # settings.target_branch
-    assert commit_call[4] == "Vulnerability Specific"  # leaf_title_from_path
-    assert commit_call[5] == "A tool for things"  # first paragraph of context
+    assert h["github_tokens"][-1] == VALID_PAT
+    assert commit_call[1] == f"{CHOSEN}/README.md"
+    assert commit_call[3] == "main"
+    assert commit_call[4] == "Vulnerability Specific"
+    assert commit_call[5] == "A tool for things"
     assert commit_call[2].startswith("- [awesome-tool](")
 
     resource = await get_resource(h["conn"], rid)
@@ -786,7 +757,7 @@ async def test_duplicate_error_notifies_without_recommit(h: dict) -> None:
     result = await flow.handle_confirm(USER)
     assert "already" in "\n".join(result.replies).lower()
     after = len([c for c in h["gh"].calls if c[0] == "commit_entry"])
-    assert after == before + 1  # exactly one attempt; the flow never re-commits
+    assert after == before + 1
     resource = await get_resource(h["conn"], await _active_id(h))
     assert resource.state == "CONFIRMING"
     assert await _audit(h, "commit_duplicate")
@@ -798,7 +769,7 @@ async def test_commit_fetch_error_surfaces_public_hint_and_keeps_confirming(h: d
     result = await flow.handle_confirm(USER)
     assert "public" in "\n".join(result.replies).lower() or "unreachable" in "\n".join(result.replies).lower()
     resource = await get_resource(h["conn"], await _active_id(h))
-    assert resource.state == "CONFIRMING"  # retryable
+    assert resource.state == "CONFIRMING"
     assert await _audit(h, "commit_failed")
 
 
@@ -811,8 +782,6 @@ async def test_confirm_without_pat_asks_for_token(h: dict) -> None:
     assert "token" in "\n".join(result.replies).lower()
     assert (await get_active_resource_for_user(h["conn"], USER)).state == "CONFIRMING"
 
-
-# ------------------------------------------------------- field edits (T4)
 
 CHAT_ID = 77001
 CARD_MSG_ID = 90042
@@ -892,7 +861,7 @@ async def test_confirming_text_without_marker_gets_the_interrupt_prompt(h: dict)
     assert result.replies == (FLOW_INTERRUPTED,)
     assert isinstance(result.keyboard, ResumeKB)
     resource = await get_resource(h["conn"], await _active_id(h))
-    assert resource.entry_line == _current_bullet()  # never applied
+    assert resource.entry_line == _current_bullet()
 
 
 async def test_description_paste_rebuilds_bullet_keeping_name_url_tags(h: dict) -> None:
@@ -909,7 +878,7 @@ async def test_description_paste_rebuilds_bullet_keeping_name_url_tags(h: dict) 
     assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert isinstance(result.keyboard, ConfirmKB) and result.keyboard.folder == CHOSEN
     assert result.parse_mode is None and result.new_message is False
-    assert result.delete_outgoing == ((CHAT_ID, CARD_MSG_ID),)  # S6.3 previous card
+    assert result.delete_outgoing == ((CHAT_ID, CARD_MSG_ID),)
     assert pending_edits.get_marker(rid) is None
     assert await _audit(h, "entry_edited")
 
@@ -922,7 +891,6 @@ async def test_tags_paste_rebuilds_keeping_name_url_description(h: dict) -> None
 
     result = await flow.handle_text(USER, "jonan", "`type:docs` `paid` `windows` `macos`")
 
-    # S4: the pasted legacy `paid` word is dropped; the rebuild is cost-free.
     expected = _current_bullet(tags="`type:docs` `windows` `macos`")
     assert (await get_resource(h["conn"], rid)).entry_line == expected
     assert result.replies == (f"{PREVIEW}\n{expected}",)
@@ -958,13 +926,13 @@ async def test_description_rejections_answer_one_error_and_persist_nothing(
 
     result = await flow.handle_text(USER, "jonan", paste)
 
-    assert len(result.replies) == 3  # error, instruction, copyable current value
+    assert len(result.replies) == 3
     assert needle in result.replies[0], result.replies[0]
     assert result.replies[-1] == "<pre>A tool for things</pre>"
     assert result.keyboard is None and result.delete_outgoing == ()
     resource = await get_resource(h["conn"], rid)
     assert resource.state == "CONFIRMING" and resource.entry_line == _current_bullet()
-    assert pending_edits.get_marker(rid) is not None  # retry stays open
+    assert pending_edits.get_marker(rid) is not None
     assert await _audit(h, "entry_edit_rejected")
 
 
@@ -996,7 +964,6 @@ async def test_tags_paste_duplicate_tags_are_deduped_by_the_existing_rule(h: dic
 
     result = await flow.handle_text(USER, "jonan", "type:tool free linux linux")
 
-    # S4: the legacy `free` word is dropped, linux dedupes, no error.
     assert (await get_resource(h["conn"], rid)).entry_line == _current_bullet()
     assert result.replies == (f"{PREVIEW}\n{_current_bullet()}",)
     assert result.delete_outgoing == ((CHAT_ID, CARD_MSG_ID),)
@@ -1026,15 +993,14 @@ async def test_description_then_tags_then_confirm_commits_edited_bullet(h: dict)
     await flow.handle_callback(USER, "jonan", "t", chat_id=CHAT_ID, message_id=CARD_MSG_ID + 1)
     await flow.handle_text(USER, "jonan", "type:lab paid docker")
 
-    # S4: `paid` is a legacy word and never survives into the rebuilt bullet.
     expected = _current_bullet("Edited description", tags="`type:lab` `docker`")
     assert (await get_resource(h["conn"], rid)).entry_line == expected
 
     await flow.handle_confirm(USER)
     commit_call = [c for c in h["gh"].calls if c[0] == "commit_entry"][-1]
     assert commit_call[1] == f"{CHOSEN}/README.md"
-    assert commit_call[2] == expected  # verbatim (S4.5)
-    assert pending_edits.get_marker(rid) is None  # ✅ ends the edit loop (S6.2)
+    assert commit_call[2] == expected
+    assert pending_edits.get_marker(rid) is None
 
 
 async def test_marker_cleared_after_cancel(h: dict) -> None:
@@ -1060,14 +1026,10 @@ async def test_description_edit_preserves_unicode_and_em_dash_name(h: dict) -> N
     assert result.replies[1] == "<pre>Descripción con ñ</pre>"
 
     await flow.handle_text(USER, "jonan", "Nueva descripción")
-    # S4: the LEGACY `free` word stored in the old bullet is dropped on rebuild.
     assert (await get_resource(h["conn"], rid)).entry_line == (
         "- [Ñom — Special](https://github.com/OtherOrg/awesome-tool) — "
         "Nueva descripción. `type:tool`"
     )
-
-
-# ---------------------------------------------------------------- factories
 
 
 def test_github_factory_always_pins_settings_target_repo(tmp_path: Path) -> None:
@@ -1083,9 +1045,6 @@ def test_github_factory_default_target_repo(h: dict) -> None:
     assert factory("tok").target_repo == "HackPot-HQ/Hackpot"
 
 
-# ------------------------------------------------- L11 hardening pins (T7)
-
-
 ANALYZING_TEXT = "🤔 Analyzing… send /cancel anytime"
 
 
@@ -1098,7 +1057,7 @@ async def test_folder_index_must_be_strict_digits(h: dict) -> None:
         "c:+1",
         "c:01",
         "c:1_0",
-        "c:١",  # Arabic-Indic digit: int() accepts it, a folder index must not
+        "c:١",
         "f: 1",
         "f:+2",
         "f:00",
@@ -1109,12 +1068,11 @@ async def test_folder_index_must_be_strict_digits(h: dict) -> None:
         assert result.keyboard is None, data
 
     active = await get_active_resource_for_user(h["conn"], USER)
-    assert active.state == "AWAITING_PLACEMENT"  # rejected input placed nothing
+    assert active.state == "AWAITING_PLACEMENT"
     assert active.folder == ""
     rows = await _audit(h, "placement_rejected")
     assert [row["detail"] for row in rows] == [f"data={data}" for data in rejected]
 
-    # PRESERVE: the honest index still resolves after the hostile ones were refused.
     await flow.handle_callback(USER, "jonan", f"c:{index}")
     active = await get_active_resource_for_user(h["conn"], USER)
     assert active.state == "AWAITING_ENTRY_INFO"
@@ -1129,7 +1087,6 @@ async def test_folder_page_index_must_be_strict_digits(h: dict) -> None:
         assert isinstance(result.keyboard, FoldersKB), data
         assert result.keyboard.page == 0, data
 
-    # PRESERVE: real payloads behave exactly as before.
     result = await flow.handle_callback(USER, "jonan", "p:1")
     assert isinstance(result.keyboard, FoldersKB) and result.keyboard.page == 1
     result = await flow.handle_callback(USER, "jonan", "o")
@@ -1150,19 +1107,19 @@ async def test_confirm_with_tampered_folder_rejects_safely(h: dict) -> None:
     result = await flow.handle_confirm(USER)
 
     assert len([c for c in h["gh"].calls if c[0] == "commit_entry"]) == commits_before
-    assert len(h["github_tokens"]) == clients_before  # no client, so no HTTP at all
-    assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"  # not lost, retryable
+    assert len(h["github_tokens"]) == clients_before
+    assert (await get_resource(h["conn"], rid)).state == "CONFIRMING"
     text = "\n".join(result.replies)
     assert result.replies and "nothing was committed" in text.lower()
-    assert "/cancel" in text  # actionable wording, no internals
-    assert "secret-marker" not in text and "../../etc" not in text  # value never echoed
+    assert "/cancel" in text
+    assert "secret-marker" not in text and "../../etc" not in text
     assert result.keyboard is None
 
     rows = await _audit(h, "commit_rejected")
     assert len(rows) == 1
     assert rows[0]["resource_id"] == rid
     assert rows[0]["detail"] == sanitize_line(f"folder={tampered}")
-    assert "\n" not in rows[0]["detail"]  # the smuggled newline is gone
+    assert "\n" not in rows[0]["detail"]
 
 
 async def test_analyzing_progress_reply_precedes_the_decision_call(h: dict) -> None:
@@ -1185,7 +1142,7 @@ async def test_analyzing_progress_reply_precedes_the_decision_call(h: dict) -> N
     result = await flow.handle_text(USER, "jonan", GITHUB_URL, progress=sink)
 
     assert order == [f"progress::{ANALYZING_TEXT}", "classify"]
-    assert isinstance(result.keyboard, CandidatesKB)  # the real answer still arrives
+    assert isinstance(result.keyboard, CandidatesKB)
 
 
 async def test_analyzing_progress_is_sent_once_per_decision_call(h: dict) -> None:
@@ -1197,11 +1154,9 @@ async def test_analyzing_progress_is_sent_once_per_decision_call(h: dict) -> Non
     async def sink(text: str) -> None:
         sent.append(text)
 
-    # PRESERVE: progress is optional — existing callers keep working untouched.
-    await flow.handle_text(USER, "jonan", "https://cool-labs.io/tool")  # intake -> ASK_SUMMARY
+    await flow.handle_text(USER, "jonan", "https://cool-labs.io/tool")
     assert sent == []
 
-    # the summary is a NEED_SUMMARY step answer: it lands directly (S4)
     result = await _answer(flow, "Fuzzing wordlist generator.", progress=sink)
     assert sent == [ANALYZING_TEXT]
     assert isinstance(result.keyboard, CandidatesKB)
@@ -1297,9 +1252,7 @@ async def test_handler_sends_the_analyzing_reply_first(h: dict) -> None:
     await handlers.on_text(message, h["deps"], h["flow"])
     assert message.answers[0] == ANALYZING_TEXT
     assert any("folder" in text.lower() for text in message.answers[1:])
-    # PRESERVE: the early progress sink keeps the bot default (no parse mode).
     assert message.parse_modes[0] is None
-    # The decision card now opts into HTML per-result (Option B numbered caption).
     assert all(mode == "HTML" for mode in message.parse_modes[1:])
 
 
@@ -1317,13 +1270,13 @@ async def test_handler_deletes_previous_card_once_after_successful_edit(h: dict)
     flow, _ = await _to_confirming(h)
     cb = FakeCallback(USER, "jonan", "d")
     await handlers.on_callback(cb, h["deps"], flow)
-    assert len(cb.message.answers) == 2  # prompt as new messages, ✅/❌ bubble intact
-    assert cb.message.bot.deleted == []  # pressing a button never deletes
+    assert len(cb.message.answers) == 2
+    assert cb.message.bot.deleted == []
 
     paste = FakeMessage(USER, "jonan", "A superb recon tool")
     await handlers.on_text(paste, h["deps"], flow)
-    assert paste.bot.deleted == [(CHAT_ID, CARD_MSG_ID)]  # exactly once, captured ids
-    assert paste.answers[-1].startswith(PREVIEW)  # the fresh confirmation card arrived
+    assert paste.bot.deleted == [(CHAT_ID, CARD_MSG_ID)]
+    assert paste.answers[-1].startswith(PREVIEW)
 
 
 async def test_handler_deletes_nothing_on_rejected_edit(h: dict) -> None:
@@ -1335,14 +1288,11 @@ async def test_handler_deletes_nothing_on_rejected_edit(h: dict) -> None:
     await handlers.on_text(paste, h["deps"], flow)
     assert paste.bot.deleted == []
     assert paste.answers[-1] == "<pre>`type:tool` `linux`</pre>"
-    assert paste.parse_modes[-1] == "HTML"  # renders as a copyable code block
-    assert len(paste.answers) == 3  # exactly one error, then the re-offered prompt
+    assert paste.parse_modes[-1] == "HTML"
+    assert len(paste.answers) == 3
 
 
-# ------------------------------------------------- intake duplicate gate (L12)
-
-
-SECOND_USER = 555  # someone else's submission: the check is global
+SECOND_USER = 555
 COMMIT_URL = "https://github.com/HackPot-HQ/Hackpot/commit/deadbeef"
 OTHER_URL = "https://cool-labs.io/tool"
 
@@ -1377,7 +1327,7 @@ async def test_committed_duplicate_names_folder_and_skips_decision(h: dict) -> N
     assert any(CHOSEN in text for text in result.replies)
     assert any(COMMIT_URL in text for text in result.replies)
     assert h["decision"].calls == []
-    assert await _count_resources(h) == before  # no new row
+    assert await _count_resources(h) == before
     rows = await _audit(h, "duplicate_link")
     assert len(rows) == 1
 
@@ -1414,7 +1364,7 @@ async def test_in_progress_duplicate_is_reported_as_pending(h: dict) -> None:
     assert str(rid) in result.replies[0]
 
     result = await flow.handle_text(USER, "jonan", OTHER_URL)
-    assert FOLDERS[0] in result.replies[0]  # folder shown when one was already chosen
+    assert FOLDERS[0] in result.replies[0]
 
 
 @pytest.mark.parametrize("state", ["CANCELLED", "FAILED"])
@@ -1426,7 +1376,7 @@ async def test_dead_submissions_stay_resubmittable(h: dict, state: str) -> None:
 
     await flow.handle_text(USER, "jonan", GITHUB_URL)
 
-    assert await _count_resources(h) == before + 1  # normal intake proceeded
+    assert await _count_resources(h) == before + 1
     assert len(h["decision"].calls) == 1
 
 
@@ -1454,9 +1404,6 @@ async def test_distinct_link_is_not_a_duplicate(h: dict) -> None:
     assert len(h["decision"].calls) == 1
 
 
-# ---------------------------------------------------------------- /stats
-
-
 async def _seed_for(h: dict, user_id: int, username: str, url: str, state: str = "NEW", entry_line: str = "") -> int:
     """One link owned by *user_id* in *state* (leaderboard fixture)."""
     conn = h["conn"]
@@ -1476,12 +1423,12 @@ async def test_stats_empty_boards_answer_two_messages(h: dict) -> None:
 
 async def test_stats_counts_only_committed_links(h: dict) -> None:
     await _seed_for(h, 200, "ana", "https://b.example/one", "COMMITTED")
-    await _seed_for(h, 200, "ana", "https://b.example/two", "CANCELLED")  # not counted
-    await _seed_for(h, USER, "jonan", GITHUB_URL, "NEW")  # in flight, not counted
+    await _seed_for(h, 200, "ana", "https://b.example/two", "CANCELLED")
+    await _seed_for(h, USER, "jonan", GITHUB_URL, "NEW")
 
     text = (await h["flow"].handle_stats(USER, "jonan")).replies[0]
     assert "🥇 @ana — 1 link" in text
-    assert "@jonan" not in text  # caller only has an in-flight link
+    assert "@jonan" not in text
     assert text.endswith(STATS_NO_COMMITS)
 
 
@@ -1508,10 +1455,10 @@ async def test_stats_notes_caller_without_commits(h: dict) -> None:
 async def test_stats_cuts_board_at_ten_and_shows_caller_rank(h: dict) -> None:
     for i in range(1, 11):
         await _seed_for(h, 200 + i, f"user{i}", f"https://b.example/{i}", "COMMITTED")
-    await _seed_for(h, USER, "jonan", GITHUB_URL, "COMMITTED")  # 11th curator
+    await _seed_for(h, USER, "jonan", GITHUB_URL, "COMMITTED")
 
     text = (await h["flow"].handle_stats(USER, "jonan")).replies[0]
-    assert text.count("@user") == 10  # only the top ten rows are rendered
+    assert text.count("@user") == 10
     assert "@jonan" not in text
     assert "You are #11 — 1 link" in text
 
@@ -1519,28 +1466,26 @@ async def test_stats_cuts_board_at_ten_and_shows_caller_rank(h: dict) -> None:
 async def test_stats_tag_board_counts_committed_tags(h: dict) -> None:
     line_a = build_entry_line("Tool A", "https://t.example/1", "does things", "tool", ["linux", "web"])
     line_b = build_entry_line("Tool B", "https://t.example/2", "does more", "tool", ["web"])
-    # a LEGACY cost word pasted as a platform tag is dropped by the builder (S1)
     line_c = build_entry_line("Tool C", "https://t.example/3", "more still", "tool", ["free", "Linux"])
     await _seed_for(h, 200, "ana", "https://t.example/1", "COMMITTED", entry_line=line_a)
     await _seed_for(h, 300, "bob", "https://t.example/2", "COMMITTED", entry_line=line_b)
     await _seed_for(h, 400, "cid", "https://t.example/3", "COMMITTED", entry_line=line_c)
-    await _seed_for(h, 500, "dee", "https://t.example/4", "NEW", entry_line=line_a)  # not counted
+    await _seed_for(h, 500, "dee", "https://t.example/4", "NEW", entry_line=line_a)
 
     text = (await h["flow"].handle_stats(USER, "jonan")).replies[1]
     assert "🏷️" in text
-    # type tags count too; ties break alphabetically; case-insensitive dedupe
     assert "🥇 type:tool — 3 links" in text
-    assert "🥈 linux — 2 links" in text  # "Linux" folded into "linux"
+    assert "🥈 linux — 2 links" in text
     assert "🥉 web — 2 links" in text
-    assert "free" not in text and "Linux" not in text  # legacy cost never emitted, one spelling
-    assert text.index("linux") < text.index("web")  # l < w
+    assert "free" not in text and "Linux" not in text
+    assert text.index("linux") < text.index("web")
 
 
 async def test_stats_tag_board_survives_a_tampered_entry_line(h: dict) -> None:
     await _seed_for(h, 200, "ana", "https://t.example/1", "COMMITTED", entry_line="not a bullet at all")
 
     result = await h["flow"].handle_stats(USER, "jonan")
-    assert result.replies[1] == STATS_TAGS_EMPTY  # skipped, no crash, nothing counted
+    assert result.replies[1] == STATS_TAGS_EMPTY
 
 
 async def test_stats_does_not_disturb_the_active_flow(h: dict) -> None:
@@ -1551,7 +1496,7 @@ async def test_stats_does_not_disturb_the_active_flow(h: dict) -> None:
 
     result = await flow.handle_stats(USER, "jonan")
 
-    assert result.replies == (STATS_EMPTY, STATS_TAGS_EMPTY)  # in-flight links are not on it
+    assert result.replies == (STATS_EMPTY, STATS_TAGS_EMPTY)
     active = await get_active_resource_for_user(h["conn"], USER)
     assert active is not None
 
@@ -1563,12 +1508,9 @@ async def test_cmd_stats_handler_sends_both_boards(h: dict) -> None:
 
     await handlers.cmd_stats(message, h["deps"], h["flow"])
 
-    assert len(message.answers) == 2  # one message per board (S: different messages)
+    assert len(message.answers) == 2
     assert "🥇 @jonan — 1 link" in message.answers[0]
     assert message.answers[1].startswith("🏷️") and "linux — 1 link" in message.answers[1]
-
-
-# ----------------------------------------------- flow-interrupt-rearm (S1, S2, S4)
 
 
 async def _to_summary(h: dict) -> ResourceFlow:
@@ -1584,7 +1526,7 @@ async def test_text_at_a_text_step_is_the_answer_directly(h: dict) -> None:
     """S4: a text-driven step (summary here) takes the message — NO Continue press."""
     flow = await _to_summary(h)
     result = await flow.handle_text(USER, "jonan", "An offline wordlist generator.")
-    assert "folder(s)" in result.replies[0]  # the decision ran immediately
+    assert "folder(s)" in result.replies[0]
     assert not await _audit(h, "flow_interrupted")
 
 
@@ -1593,15 +1535,15 @@ async def test_optional_tags_are_accepted_without_the_prompt(h: dict) -> None:
     flow = await _to_interview(h)
     await flow.handle_text(USER, "jonan", "Name")
     await flow.handle_text(USER, "jonan", "Description")
-    await flow.handle_callback(USER, "jonan", "tool")  # type step by button
+    await flow.handle_callback(USER, "jonan", "tool")
     result = await flow.handle_text(USER, "jonan", "linux docker")
-    assert isinstance(result.keyboard, ConfirmKB)  # straight to the preview
+    assert isinstance(result.keyboard, ConfirmKB)
     assert not await _audit(h, "flow_interrupted")
 
 
 async def test_text_during_button_step_asks_continue_or_cancel(h: dict) -> None:
     """S1 + S4: a text the current step cannot use gets the prompt, unprocessed."""
-    flow = await _to_placement(h)  # AWAITING_PLACEMENT (candidates card)
+    flow = await _to_placement(h)
     result = await flow.handle_text(USER, "jonan", "just text")
     assert result.replies == (FLOW_INTERRUPTED,)
     assert isinstance(result.keyboard, ResumeKB)
@@ -1613,9 +1555,9 @@ async def test_text_during_button_step_asks_continue_or_cancel(h: dict) -> None:
 async def test_continue_resends_the_current_step_message(h: dict) -> None:
     """S2: Continue re-sends the step message; a button step stays button-driven."""
     flow = await _to_placement(h)
-    await flow.handle_text(USER, "jonan", "noise")  # -> prompt
+    await flow.handle_text(USER, "jonan", "noise")
     resumed = await flow.handle_callback(USER, "jonan", "keep")
-    assert isinstance(resumed.keyboard, FoldersKB)  # placement step re-sent
+    assert isinstance(resumed.keyboard, FoldersKB)
     assert await _audit(h, "flow_resumed")
     again = await flow.handle_text(USER, "jonan", "more text")
     assert again.replies == (FLOW_INTERRUPTED,)
@@ -1646,7 +1588,7 @@ async def test_start_with_active_flow_offers_the_buttons(h: dict) -> None:
     assert result.replies[-1] == FLOW_INTERRUPTED
     assert isinstance(result.keyboard, ResumeKB)
 
-    await flow.handle_cancel(USER)  # no flow: the plain greeting contract stays
+    await flow.handle_cancel(USER)
     plain = await flow.handle_start(USER, "jonan")
     assert plain.replies == (GREETING_READY,)
     assert plain.keyboard is None
@@ -1654,10 +1596,10 @@ async def test_start_with_active_flow_offers_the_buttons(h: dict) -> None:
 
 async def test_rejected_answer_just_reasks_without_the_prompt(h: dict) -> None:
     """S4: a rejection re-asks its own step; the retry lands directly."""
-    flow = await _to_interview(h)  # name step, no pre-fills
+    flow = await _to_interview(h)
     result = await flow.handle_text(USER, "jonan", "Bad]Name")
-    assert "[" in result.replies[0] or "]" in result.replies[0]  # INVALID_FIELD
-    result = await flow.handle_text(USER, "jonan", "SQLMap")  # retry, straight through
+    assert "[" in result.replies[0] or "]" in result.replies[0]
+    result = await flow.handle_text(USER, "jonan", "SQLMap")
     assert "description" in "\n".join(result.replies).lower()
 
 
@@ -1665,10 +1607,10 @@ async def test_confirming_paste_back_after_the_marker_press(h: dict) -> None:
     """The ✏️/🏷️ ask takes its paste; only stray CONFIRMING text is guarded."""
     flow, _ = await _to_confirming(h)
     stray = await flow.handle_text(USER, "jonan", "stray text")
-    assert stray.replies == (FLOW_INTERRUPTED,)  # no marker -> button step
-    await flow.handle_callback(USER, "jonan", "d")  # the edit ask takes the next text
+    assert stray.replies == (FLOW_INTERRUPTED,)
+    await flow.handle_callback(USER, "jonan", "d")
     result = await flow.handle_text(USER, "jonan", "A superb recon tool")
-    assert result.replies[0].startswith(PREVIEW)  # accepted directly
+    assert result.replies[0].startswith(PREVIEW)
 
 
 async def test_keep_without_active_flow_says_nothing_pending(h: dict) -> None:

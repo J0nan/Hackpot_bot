@@ -47,7 +47,6 @@ API_ROOT = "https://api.github.com"
 RAW_ROOT = "https://raw.githubusercontent.com"
 PREFIX = "CATEGORIES_JSON="
 
-# A placeholder that is a sentence, never empty (Settings rejects blank criteria).
 _PLACEHOLDER = "Tools and resources related to {sub} ({domain}) — refine this description."
 
 
@@ -283,9 +282,6 @@ def sync_once(
     tree = fetch_tree(repo, branch, token)
     leaves, missing = extract_leaf_paths(tree, require_readme=require_readme)
 
-    # By default the repo is the source of truth: every leaf's README intro is
-    # fetched. keep-curated only fetches leaves that are blank/placeholder;
-    # readmes=False skips fetches entirely.
     descriptions: dict[str, str] = {}
     if readmes:
         needs = [
@@ -331,8 +327,7 @@ def apply_refresh(
         raise RuntimeError(f"category sync refused: {exc}") from None
 
     if categories != dict(settings.categories):
-        settings.categories = categories  # atomic reference swap; handlers
-        # read the whole map per request, so no torn state is possible.
+        settings.categories = categories
         logger.info("categories refreshed: %d live leaf(s)", len(categories))
     else:
         logger.info("categories unchanged (%d leaf(s))", len(categories))
@@ -381,7 +376,6 @@ async def category_refresh_loop(
 
     async def _run_once() -> None:
         try:
-            # fetch_* are sync httpx calls; run them outside the event loop.
             await to_thread(refresh, settings)
         except asyncio.CancelledError:
             raise

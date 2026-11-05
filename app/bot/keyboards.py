@@ -25,7 +25,7 @@ OTHER_FOLDERS_LABEL = "📂 Other folder…"
 BACK_LABEL = "⬅️ Back"
 NEXT_LABEL = "Next ➡️"
 BUTTONS_PER_ROW = 5
-TG_BUTTON_TEXT_LIMIT = 64  # Telegram caps button text at 64 UTF-16 code units
+TG_BUTTON_TEXT_LIMIT = 64
 
 HELP_TEXT = (
     "Hackpot resource bot — index a public resource into the right leaf category.\n"
@@ -77,7 +77,7 @@ def _fit_folder_button(prefix: str, folder: str, suffix: str = "") -> str:
     label = f"{prefix}{folder}{suffix}"
     if _utf16_len(label) <= TG_BUTTON_TEXT_LIMIT:
         return label
-    room = TG_BUTTON_TEXT_LIMIT - _utf16_len(prefix + suffix) - 1  # 1 for "…"
+    room = TG_BUTTON_TEXT_LIMIT - _utf16_len(prefix + suffix) - 1
     if room <= 0:
         return f"{prefix}…"
     return f"{prefix}…{folder[-room:]}{suffix}"
@@ -130,7 +130,7 @@ def folders_kb(
         nav.append(_button(NEXT_LABEL, f"p:{page + 1}"))
     if nav:
         rows.append(nav)
-    if not rows:  # empty category list can never happen (Settings validates), but stay safe
+    if not rows:
         rows.append([_button(OTHER_FOLDERS_LABEL, "o")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -165,8 +165,6 @@ def confirm_kb(folder: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [_button(_fit_folder_button("✅ Commit to ", folder), "✅")],
             [_button("❌ Cancel", "❌")],
-            # S6.1 (T4): one row, two field-edit buttons — payloads "d"/"t",
-            # valid only while CONFIRMING. The whole-bullet "e" row is removed.
             [_button("✏️ Description", "d"), _button("🏷️ Tags", "t")],
         ]
     )

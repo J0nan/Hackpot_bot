@@ -17,7 +17,6 @@ from pathlib import Path
 
 import aiosqlite
 
-# All resource states; mirrors the resources.state CHECK constraint exactly.
 RESOURCE_STATES: frozenset[str] = frozenset(
     {
         "NEW",
@@ -32,12 +31,9 @@ RESOURCE_STATES: frozenset[str] = frozenset(
     }
 )
 
-# Final states end a resource's life. Resume after restart (S10) only looks
-# at the remaining, non-final states; the tuple order is stable for SQL.
 FINAL_STATES: frozenset[str] = frozenset({"COMMITTED", "FAILED", "CANCELLED"})
 ACTIVE_STATES: tuple[str, ...] = tuple(sorted(RESOURCE_STATES - FINAL_STATES))
 
-# Resource source kinds; mirrors the resources.kind CHECK constraint.
 RESOURCE_KINDS: frozenset[str] = frozenset({"github", "other"})
 
 SCHEMA = """

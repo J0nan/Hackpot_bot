@@ -47,7 +47,6 @@ class RateLimiter:
         clock changes or NTP jumps cannot extend or shrink the window.
         """
         if isinstance(user_id, bool) or not isinstance(user_id, int):
-            # Same reasoning as app.security.authz: only numeric IDs get a bucket.
             return False
         now = self._clock()
         cutoff = now - self.window_seconds

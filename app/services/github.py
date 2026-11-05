@@ -27,36 +27,27 @@ from app.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# --- S13: the target repo's contribution guidelines -------------------------- #
 
-#: Allowed `type:` tags (HackPot-HQ/Hackpot CONTRIBUTING.md).
 ENTRY_TYPES: tuple[str, ...] = ("tool", "course", "docs", "wordlist", "lab", "article", "video")
-#: Cost tags the repo used to carry (S13 history). They are LEGACY ONLY: the
-#: bot never asks or emits them, and build strips them from platform tags so
-#: an old bullet that resurfaces through an edit loses the cost word (S4).
 LEGACY_COST_TAGS: tuple[str, ...] = ("free", "paid", "freemium")
-#: Separator between display name, link and description in a bullet.
 EM_DASH = "—"
-#: Heading of the section every bullet lives under.
 RESOURCES_HEADING = "## Resources"
 
-MAX_URL_LEN = 2000  # Security: URLs https-only, <= 2000 chars
+MAX_URL_LEN = 2000
 MAX_NAME_LEN = 120
 MAX_DESCRIPTION_LEN = 500
 MAX_TAG_LEN = 40
 
-DEFAULT_TARGET_REPO = "HackPot-HQ/Hackpot"  # S4; callers should pass Settings.target_repo
+DEFAULT_TARGET_REPO = "HackPot-HQ/Hackpot"
 
 _GITHUB_HOST = "github.com"
 _OWNER_RE = re.compile(r"^[A-Za-z0-9._-]{1,39}$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
-# "- [Name](url)" bullet; the template's HTML comment hint never matches it.
 _BULLET_RE = re.compile(r"^[ \t]*-[ \t]+\[(?P<name>[^\]]*)\]\((?P<url>[^)\s]+)\)")
 _RESOURCES_HEADING_RE = re.compile(r"^[ \t]*##[ \t]+Resources[ \t]*$", re.IGNORECASE)
-_NEXT_HEADING_RE = re.compile(r"^[ \t]*##[ \t]")  # `###` is not a section end
+_NEXT_HEADING_RE = re.compile(r"^[ \t]*##[ \t]")
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 _TAG_UNSAFE_RE = re.compile(r"[\s`'\"\\|]")
-# --- pasted-bullet grammar (parse_entry_line; mirrors build_entry_line output) ---
 _ENTRY_DASH_RE = re.compile(r"^-[ \t]")
 _ENTRY_LINK_RE = re.compile(
     r"^-[ \t]+\[(?P<name>[^\]]*)\]\((?P<url>[^)]*)\)[ \t]*(?P<rest>.*)$"
@@ -64,8 +55,6 @@ _ENTRY_LINK_RE = re.compile(
 _ENTRY_SEPARATOR_RE = re.compile(rf"^(?:{re.escape(EM_DASH)}|-)[ \t]+(?P<body>.*)$")
 _ENTRY_TAG_RE = re.compile(r"[ \t]*`(?P<tag>[^`]*)`[ \t]*$")
 
-#: S15 — every read failure tells the caller to ask the user for the info and
-#: to remember that all links must be public. Safe to show to an admin verbatim.
 PUBLIC_HINT = (
     "GitHub didn't return that information — ask the user for a summary and remind "
     "them that all links must be public."
@@ -105,10 +94,6 @@ class EntryLineError(ValueError):
     """
 
 
-# --------------------------------------------------------------------------- #
-# Pure helpers
-# --------------------------------------------------------------------------- #
-
 def parse_repo_url(url: str) -> tuple[str, str] | None:
     """Return (owner, repo) for an https GitHub repo URL, else None (S3).
 
@@ -127,7 +112,6 @@ def parse_repo_url(url: str) -> tuple[str, str] | None:
     host = parts.netloc.lower()
     if host.startswith("www."):
         host = host[4:]
-    # Exact host match: userinfo, ports and look-alikes (evil.com/github.com/…) fail.
     if host != _GITHUB_HOST:
         return None
     segments = [s for s in parts.path.split("/") if s]
@@ -227,14 +211,11 @@ def build_entry_line(
     if type_tag not in ENTRY_TYPES:
         raise ValueError(f"invalid type tag {type_tag!r}: expected one of {', '.join(ENTRY_TYPES)}")
 
-    # No cost tag is ever emitted; legacy cost words inside platform tags are
-    # dropped silently (S4: an old bullet rebuilds without cost, never errors).
     tags: list[str] = [f"type:{type_tag}"]
     tags.extend(
         tag for tag in _normalize_platform_tags(platform_tags) if tag not in LEGACY_COST_TAGS
     )
 
-    # "strips trailing punctuation from description then appends `.`"
     sentence = summary.rstrip(".,;:!?").rstrip() or summary
     rendered = " ".join(f"`{tag}`" for tag in tags)
     return f"- [{display}]({link}) {EM_DASH} {sentence}. {rendered}"
@@ -275,7 +256,7 @@ def parse_entry_line(line: str) -> ParsedEntry:
     body = sep_match.group("body")
 
     tags: list[str] = []
-    while True:  # tags are the trailing `...` run, if any
+    while True:
         tag_match = _ENTRY_TAG_RE.search(body)
         if tag_match is None:
             break
@@ -339,8 +320,6 @@ def insert_entry(readme_text: str, entry_line: str) -> tuple[str, str]:
             (i for i, name, _ in bullets if name.casefold() > key), bullets[-1][0] + 1
         )
     else:
-        # Keep the file byte-for-byte: land after the last non-blank line of the
-        # section (the format hint comment), or directly under the heading.
         index = heading + 1
         for i in range(heading + 1, end):
             if lines[i].strip():
@@ -377,10 +356,6 @@ def _append_section(readme_text: str, entry_line: str) -> str:
     base = readme_text if not readme_text or readme_text.endswith(("\n", "\r")) else readme_text + newline
     return f"{base}{newline}{RESOURCES_HEADING}{newline}{newline}{entry_line}{newline}"
 
-
-# --------------------------------------------------------------------------- #
-# Network client
-# --------------------------------------------------------------------------- #
 
 def _read_error(status: int) -> FetchError:
     """Map a failing read to the S15 message (never leak the response body)."""
@@ -431,7 +406,6 @@ class GitHubClient:
         if token:
             self._headers["Authorization"] = f"Bearer {token}"
 
-    # -- transport ---------------------------------------------------------- #
 
     async def _request(
         self,
@@ -443,18 +417,15 @@ class GitHubClient:
         log_hint: str = "",
     ) -> httpx.Response:
         url = f"{self.BASE}{path}"
-        # S5: DEBUG request summary. Never the request body — `log_hint` carries
-        # only safe coordinates (branch, byte count), never content.
         logger.debug("github %s %s%s", method, path, f" {log_hint}" if log_hint else "")
         try:
             response = await self._client.request(
                 method, url, headers=self._headers, params=params, json=json_body
             )
-        except httpx.HTTPError as exc:  # timeout, connect error, protocol error
+        except httpx.HTTPError as exc:
             logger.warning("github %s %s unreachable (%s)", method, path, type(exc).__name__)
             raise FetchError(f"GitHub is unreachable right now. {PUBLIC_HINT}", public_hint=True) from exc
         if response.status_code == 404:
-            # 404 is normal control flow for get_file ("leaf README not created yet")
             logger.debug("github %s %s -> HTTP 404 (expected miss path)", method, path)
         elif response.status_code >= 400:
             logger.warning("github %s %s -> HTTP %d", method, path, response.status_code)
@@ -486,7 +457,6 @@ class GitHubClient:
         except UnicodeDecodeError as exc:
             raise FetchError(f"The {what} is not a text file. {PUBLIC_HINT}", public_hint=True) from exc
 
-    # -- reads -------------------------------------------------------------- #
 
     async def repo_meta(self, owner: str, repo: str) -> dict[str, Any]:
         """Public metadata used to pre-fill the entry interview (S14)."""
@@ -526,7 +496,6 @@ class GitHubClient:
         sha = str(data["sha"]) if isinstance(data, dict) and data.get("sha") else ""
         return text, sha
 
-    # -- writes ------------------------------------------------------------- #
 
     async def put_file(
         self,
@@ -562,7 +531,6 @@ class GitHubClient:
         url = self._commit_url(data)
         if not url:
             raise FetchError(f"GitHub did not confirm the commit for {path}.")
-        # S5: INFO milestone — the commit landed; url is public, carries no secret.
         logger.info("github commit ok path=%s branch=%s url=%s", path, branch, url)
         return url
 
@@ -605,12 +573,11 @@ class GitHubClient:
             base = leaf_template(title, leaf_description) if text is None else text
             new_text, section_status = insert_entry(base, entry_line)
             if section_status == "duplicate":
-                # Never echo the admin-supplied bullet into the error (S12).
                 logger.warning("github duplicate path=%s (nothing committed)", path)
                 raise DuplicateError(
                     f"That link is already listed in {path} — nothing was committed."
                 )
-            if section_status == "no-section":  # A1 safety net / existing file lacks it
+            if section_status == "no-section":
                 new_text = _append_section(base, entry_line)
             try:
                 commit_url = await self.put_file(
@@ -619,7 +586,7 @@ class GitHubClient:
             except ConflictError:
                 if attempt == 1:
                     raise
-                text, sha = await self.get_file(path, branch)  # fresh sha + fresh content
+                text, sha = await self.get_file(path, branch)
                 sha = sha or None
                 status = "inserted" if text is not None else "created"
                 continue

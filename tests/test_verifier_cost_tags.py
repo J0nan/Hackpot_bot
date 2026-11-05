@@ -98,7 +98,6 @@ async def _row(h, rid) -> str:
     return hashlib.sha256(repr((r.state, r.entry_line, r.folder, r.updated_at)).encode()).hexdigest()
 
 
-# S1
 def test_s1_no_cost_param_and_legacy_words_dropped() -> None:
     assert "cost_tag" not in inspect.signature(build_entry_line).parameters
     assert build_entry_line("N", "https://n.dev", "D", "tool", ["free", "paid", "freemium", "linux"]) == (
@@ -110,7 +109,6 @@ def test_s4_legacy_bullet_still_parses() -> None:
         "type:tool", "free", "linux")
 
 
-# S3
 def test_s3_request_shape_and_result_fields() -> None:
     assert set(build_request("m", "T-1", "c", CATS)["questions"]) == {"folder", "needs_admin"}
     assert "cost" not in [f.name for f in dataclasses.fields(ClassificationResult)]
@@ -133,7 +131,6 @@ async def test_s3_new_decision_rows_store_empty_cost_choice(h) -> None:
         assert (await c.fetchone())["cost_choice"] == ""
 
 
-# S2
 async def test_s2_interview_order_and_cost_callbacks_unknown(h) -> None:
     flow = h["flow"]
     await flow.handle_start(USER, "jonan")
@@ -154,7 +151,6 @@ async def test_s2_interview_order_and_cost_callbacks_unknown(h) -> None:
     assert not hasattr(kb_mod, "cost_kb")
 
 
-# S4
 async def test_s4_legacy_row_edits_drop_cost_word(h) -> None:
     flow = h["flow"]
     rid = await _to_confirming(h)
@@ -176,7 +172,6 @@ async def test_s4_legacy_row_edits_drop_cost_word(h) -> None:
         f"- [awesome-tool]({URL}) \u2014 Fresh new description. `type:tool` `linux`")
 
 
-# S5
 async def test_s5_stats_boards_and_clean_commit_wire(h) -> None:
     flow = h["flow"]
     rid = await _to_confirming(h)

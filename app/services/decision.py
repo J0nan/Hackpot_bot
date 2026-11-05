@@ -45,27 +45,21 @@ __all__ = [
     "build_request",
 ]
 
-# Question identifiers used in the request and parsed back from the response.
 FOLDER_QUESTION = "folder"
 ADMIN_QUESTION = "needs_admin"
 
-# Verbatim wording sent to the model (kept here so tests can pin it).
 FOLDER_INSTRUCTIONS = "Which Hackpot leaf category should this resource go into?"
 ADMIN_INSTRUCTIONS = (
     "Is this resource sensitive or unusual enough that a human admin should "
     "double-check the placement?"
 )
 
-# Hard cap on the state content we are willing to send (model limit is far
-# larger: 65536 tokens); callers may pass a smaller cap.
 MAX_STATE_CHARS = 20_000
 
-# Bounded retry policy (Security section): 1 attempt + 2 retries.
 MAX_ATTEMPTS = 3
 RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0)
 RETRY_STATUS_429 = 429
 
-# Response excerpts must stay short and log-safe.
 BODY_EXCERPT_LIMIT = 300
 EXCERPT_SUFFIX = "..."
 REDACTED = "[redacted]"
@@ -216,7 +210,6 @@ def _parse_classification(
         _number(admin_answer.get("noul")) if isinstance(admin_answer, Mapping) else None
     )
 
-    # A legacy "cost" answer may still arrive from the model: ignored (S3).
     raw_request_id = data.get("request_id")
     request_id = raw_request_id if isinstance(raw_request_id, str) else ""
 
@@ -260,7 +253,6 @@ class DecisionClient:
         self._model = model
         self._client = client
         self._timeout_s = timeout_s
-        # Injectable so tests never wait on real backoff.
         self._sleep: SleepFn = sleep if sleep is not None else asyncio.sleep
 
     def _headers(self) -> dict[str, str]:
@@ -291,8 +283,6 @@ class DecisionClient:
                     self._api_url, json=body, headers=self._headers(), timeout=self._timeout_s
                 )
             except httpx.TransportError as exc:
-                # httpx transport messages carry the URL only, but they are
-                # still user-supplied text: keep them through _safe().
                 last_failure = f"transport error ({type(exc).__name__}: {self._safe(str(exc))})"
                 if is_last:
                     logger.error(
@@ -364,7 +354,6 @@ class DecisionClient:
                 )
             return data
 
-        # Unreachable: every branch above returns or raises.
         raise DecisionError(self._safe(f"decision request failed: {last_failure}"))
 
     async def classify(
