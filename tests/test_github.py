@@ -150,7 +150,7 @@ def test_build_entry_line_rejects_bad_type(bad_type: str) -> None:
 
 def test_build_entry_line_drops_cost_words_from_platform_tags() -> None:
     line = build_entry_line("N", "https://n.dev", "Desc", "tool", ["free", "linux", "paid", "docker"])
-    assert line.endswith("Desc. `type:tool` `linux` `docker`")
+    assert line.endswith("Desc. `type:tool` `docker` `linux`")
 
 
 @pytest.mark.parametrize("name,url", [("", "https://a.dev"), ("  ", "https://a.dev"), ("N", ""), ("N", "   ")])
@@ -178,11 +178,21 @@ def test_build_entry_line_strips_trailing_punctuation_and_adds_period() -> None:
         )
 
 
-def test_build_entry_line_dedupes_platform_tags_keeping_order() -> None:
+def test_build_entry_line_sorts_optional_tags_alphabetically_type_first() -> None:
+    """Format rule: the type tag is always first; platform tags follow, in
+    case-insensitive alphabetical order, deduped with the first spelling kept."""
+    line = build_entry_line(
+        "N", "https://a.dev", "Desc", "tool",
+        ["Zz", "api", "Linux", "docker", "Windows", "linux"],
+    )
+    assert line.endswith("Desc. `type:tool` `api` `docker` `Linux` `Windows` `Zz`")
+
+
+def test_build_entry_line_dedupes_platform_tags_then_sorts_alphabetically() -> None:
     line = build_entry_line(
         "N", "https://a.dev", "Desc", "docs", ["linux", "Windows", "linux", "docker"]
     )
-    assert line.endswith("Desc. `type:docs` `linux` `Windows` `docker`")
+    assert line.endswith("Desc. `type:docs` `docker` `linux` `Windows`")
 
 
 CANONICAL = (
@@ -344,7 +354,7 @@ def test_parse_entry_line_error_does_not_echo_payload() -> None:
     assert len(str(excinfo.value)) < 200
 
 
-def test_build_entry_line_known_output_unchanged_after_shared_validation_refactor() -> None:
+def test_build_entry_line_known_output_tags_sorted_after_alphabetical_rule() -> None:
     assert build_entry_line(
         "Amass",
         "https://github.com/owasp-amass/amass",
@@ -353,7 +363,7 @@ def test_build_entry_line_known_output_unchanged_after_shared_validation_refacto
         ["linux", "Windows", "linux", "docker"],
     ) == (
         "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
-        "`type:tool` `linux` `Windows` `docker`"
+        "`type:tool` `docker` `linux` `Windows`"
     )
 
 
@@ -526,8 +536,8 @@ def test_leaf_template_exact_text() -> None:
         "## Resources\n"
         "\n"
         "<!-- Format: - [Name](https://url) — what it does and why it matters. Tags: "
-        "`type:tool|course|docs|wordlist|lab|article|video` "
-        "`platform or tech` -->\n"
+        "`type:tool|course|docs|wordlist|lab|article|video` first, then "
+        "`platform or tech` tags alphabetically -->\n"
     )
 
 
@@ -545,8 +555,8 @@ def test_leaf_template_then_insert_resulting_exact_file_text() -> None:
         "## Resources\n"
         "\n"
         "<!-- Format: - [Name](https://url) — what it does and why it matters. Tags: "
-        "`type:tool|course|docs|wordlist|lab|article|video` "
-        "`platform or tech` -->\n"
+        "`type:tool|course|docs|wordlist|lab|article|video` first, then "
+        "`platform or tech` tags alphabetically -->\n"
         "- [Amass](https://github.com/owasp-amass/amass) — Subdomain enumeration. "
         "`type:tool` `linux`\n"
     )

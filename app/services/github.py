@@ -197,7 +197,10 @@ def build_entry_line(
     type_tag: str,
     platform_tags: list[str] | None = None,
 ) -> str:
-    """Build one bullet: `- [Name](url) — Description. `type:tool` `linux``."""
+    """Build one bullet: `- [Name](url) — Description. `type:tool` `docker` `linux``.
+
+    Format rule: the `type:` tag is always the first tag; the optional platform
+    tags that follow are filed case-insensitively alphabetically."""
     display = _one_line(name, "name", MAX_NAME_LEN)
     summary = _one_line(description, "description", MAX_DESCRIPTION_LEN)
     link = _normalize_url(url)
@@ -205,9 +208,10 @@ def build_entry_line(
         raise ValueError(f"invalid type tag {type_tag!r}: expected one of {', '.join(ENTRY_TYPES)}")
 
     tags: list[str] = [f"type:{type_tag}"]
-    tags.extend(
+    platform = [
         tag for tag in _normalize_platform_tags(platform_tags) if tag not in LEGACY_COST_TAGS
-    )
+    ]
+    tags.extend(sorted(platform, key=str.casefold))
 
     sentence = summary.rstrip(".,;:!?").rstrip() or summary
     rendered = " ".join(f"`{tag}`" for tag in tags)
@@ -329,8 +333,8 @@ def leaf_template(title: str, description: str) -> str:
     return (
         f"# {title}\n\n{description}\n\n{RESOURCES_HEADING}\n\n"
         "<!-- Format: - [Name](https://url) — what it does and why it matters. Tags: "
-        "`type:tool|course|docs|wordlist|lab|article|video` "
-        "`platform or tech` -->\n"
+        "`type:tool|course|docs|wordlist|lab|article|video` first, then "
+        "`platform or tech` tags alphabetically -->\n"
     )
 
 

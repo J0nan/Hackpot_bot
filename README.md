@@ -328,7 +328,7 @@ authorized admin ──/start──▶ no PAT stored? ──▶ asks for one Git
   block: modify it (one line, no `[ ]` or backticks, at most 500 characters) and
   send it back. **🏷️ Tags** sends the current tag line: edit it on one line (the
   first tag stays a `type:` tag, platform tags follow the normal
-  tag rules) and send it back. Either way the bot keeps the name and the reviewed
+  tag rules and the bot files them alphabetically) and send it back. Either way the bot keeps the name and the reviewed
   link byte-identical, re-applies the entry format, re-sends the confirmation and
   **deletes the previous confirmation message** — ✅ then commits the edited
   bullet. Rejected pastes answer one specific error plus the re-offered prompt,
@@ -352,6 +352,8 @@ inside the leaf's `## Resources`, alphabetical by display name.
 ```
 
 Types are `tool|course|docs|wordlist|lab|article|video`, plus optional platform tags.
+The `type:` tag is always the first tag of the run, and the bot files the platform
+tags alphabetically (case-insensitive) whatever order they arrive in.
 A cost tag (`free`/`paid`/`freemium`) is no longer used — the bot never emits it, and a
 legacy cost word drops out of an entry the next time its description or tags are edited.
 The bot inserts alphabetically, aborts a duplicate URL, and never

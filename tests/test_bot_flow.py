@@ -723,6 +723,19 @@ async def test_platforms_none_accepts_empty_optional(h: dict) -> None:
     assert "none" not in resource.entry_line.split("`")
 
 
+async def test_interview_preview_sorts_platform_tags_alphabetically(h: dict) -> None:
+    """Whatever order the tags arrive in, the bullet files type first, alphabetical."""
+    flow = await _to_interview(h)
+    await _answer(flow, "Name")
+    await _answer(flow, "Description")
+    await flow.handle_callback(USER, "jonan", "tool")
+    await flow.handle_callback(USER, "jonan", "free")
+    await _answer(flow, "web docker gui")
+    resource = await get_resource(h["conn"], await _active_id(h))
+    assert resource.state == "CONFIRMING"
+    assert resource.entry_line.endswith("`type:tool` `docker` `gui` `web`")
+
+
 async def test_platforms_reject_backtick_tokens(h: dict) -> None:
     flow = await _to_interview(h)
     await _answer(flow, "Name")
@@ -1102,7 +1115,8 @@ async def test_tags_paste_rebuilds_keeping_name_url_description(h: dict) -> None
 
     result = await flow.handle_text(USER, "jonan", "`type:docs` `paid` `windows` `macos`")
 
-    expected = _current_bullet(tags="`type:docs` `windows` `macos`")
+    # Cost word drops, platform tags are filed alphabetically after the type tag.
+    expected = _current_bullet(tags="`type:docs` `macos` `windows`")
     assert (await get_resource(h["conn"], rid)).entry_line == expected
     assert result.replies == (f"{PREVIEW}\n{expected}",)
     assert result.delete_outgoing == ((CHAT_ID, CARD_MSG_ID),)
